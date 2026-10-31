@@ -16,8 +16,14 @@ export async function makeFixture() {
   const main=document.querySelector('main'),log=document.querySelector('#fixture-log');
   const storage={get:async(k,d)=>{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v);},set:async(k,v)=>{if(writeFail)throw new Error('模拟：存储空间不足');localStorage.setItem(k,JSON.stringify(v));},list:async()=>Object.keys(localStorage),listen:async(k,fn)=>{const cb=e=>{if(e.key===k)fn();};window.addEventListener('storage',cb);return cb;},unlisten:cb=>window.removeEventListener('storage',cb),menu:()=>{}};
   function showForum(){href='https://discord.com/channels/'+G+'/'+F;main.replaceChildren(element('header',{},element('h1',{text:'電気工学 · 论坛资料'})),element('button',{text:'创建帖子'}));const list=element('div',{'data-list-id':'forum-channel-list'});for(const [id,title] of [[T,longTitle],[U,'教程10｜数字电子技术']])list.append(element('a',{href:'https://discord.com/channels/'+G+'/'+id,onclick:e=>{e.preventDefault();showThread(id,title);}},element('h2',{text:title})));main.append(list);}
-  function showThread(id=T,title=longTitle){href='https://discord.com/channels/'+G+'/'+id;main.replaceChildren(element('header',{},element('h1',{text:title}),element('button',{id:'follow',text:'关注帖子',onclick:e=>{if(!fail)setTimeout(()=>e.target.textContent='取消关注',180);}})),element('p',{text:'这是模拟帖子内容。脚本仅使用可见标题和按钮状态。'}));}
+  function showThread(id=T,title=longTitle){href='https://discord.com/channels/'+G+'/'+id;main.replaceChildren(element('header',{},element('h1',{text:title}),element('button',{id:'follow',text:'关注帖子',onclick:e=>{if(!fail)setTimeout(()=>e.target.textContent='取消关注',180);}})),element('p',{text:'这是模拟帖子内容。脚本仅使用可见标题和按钮状态。'}),element('div',{id:'discord-composer',role:'textbox',contenteditable:'true','aria-label':'Discord 帖子编辑器'}));}
   showForum();const app=new ArchiveApp(storage,()=>href);app.start().catch(e=>log.textContent=e.stack);window.fixtureApp=app;
+  // Simulate a Discord global shortcut handler that mistakes Shadow DOM's host
+  // for a non-editable key target. Capture runs before the userscript's root.
+  document.addEventListener('keydown',e=>{
+    const editor=main.querySelector('#discord-composer');
+    if(editor&&e.key.length===1&&e.target?.id==='dfa-root'&&!e.target.isContentEditable)editor.textContent+=e.key;
+  },true);
   document.querySelector('#forum').onclick=()=>{fail=false;showForum();};document.querySelector('#thread').onclick=()=>{fail=false;showThread('666666666666666666','父频道未知 · 直接访问帖子');};
   document.querySelector('#failed').onclick=()=>{fail=true;showThread('777777777777777777','关注失败时不应收藏');};
   document.querySelector('#plain').onclick=()=>{href='https://discord.com/channels/'+G+'/888888888888888888';main.replaceChildren(element('header',{},element('h1',{text:'普通文字频道'})),element('p',{text:'不应误认成论坛。'}));};
