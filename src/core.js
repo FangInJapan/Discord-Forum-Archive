@@ -38,6 +38,7 @@ export function validateRecord(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('收藏记录格式错误。');
   for (const k of ['guildId', 'threadId']) if (typeof raw[k] !== 'string' || !ID.test(raw[k])) throw new Error(`${k} 必须是 Snowflake 字符串。`);
   if (raw.forumId !== null && (typeof raw.forumId !== 'string' || !ID.test(raw.forumId) || raw.forumId === raw.threadId)) throw new Error('父论坛 ID 不合法，或与帖子 ID 相同。');
+  if (raw.collectionId !== undefined && (typeof raw.collectionId !== 'string' || !FOLDER_ID.test(raw.collectionId))) throw new Error('收藏夹 ID 不合法。');
   if (typeof raw.starred !== 'boolean' || !SOURCES.includes(raw.source)) throw new Error('星标或来源字段不合法。');
   if (!['unknown', 'following'].includes(raw.nativeFollowState)) throw new Error('关注状态字段不合法。');
   return {
@@ -49,7 +50,7 @@ export function validateRecord(raw) {
     url: canonical(raw.guildId, raw.threadId), savedAt: time(raw.savedAt, '收藏'),
     modifiedAt: time(raw.modifiedAt, '修改'), lastObservedAt: raw.lastObservedAt === null ? null : time(raw.lastObservedAt, '观察'),
     source: raw.source, starred: raw.starred, nativeFollowState: raw.nativeFollowState,
-    collectionId: FOLDER_ID.test(raw.collectionId ?? 'default') ? (raw.collectionId ?? 'default') : 'default',
+    collectionId: raw.collectionId ?? 'default',
     titleUpdatedAt: raw.titleUpdatedAt == null ? null : time(raw.titleUpdatedAt,'标题更新时间')
   };
 }
