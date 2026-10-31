@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ArchiveApp} from '../src/app.js';
+import {ArchiveApp,isolatePanelEvents} from '../src/app.js';
 import {ArchiveStore,makeRecord,identity,cleanPrefs} from '../src/core.js';
 const G='111111111111111111',F='222222222222222222',T='333333333333333333';
 function app() {
@@ -42,4 +42,22 @@ test('layout modes, DM hiding and explicit recovery retain original dimensions',
     a.force=true;a.layout();assert.equal(a.panel.hidden,false);assert.equal(a.prefs.width,620);assert.equal(a.prefs.height,500);
     a.prefs.mode='hidden';a.layout();assert.equal(a.panel.hidden,true);assert.equal(a.tab.hidden,true);
   }finally{[globalThis.innerWidth,globalThis.innerHeight]=previous;}
+});
+
+test('Shadow DOM isolation keeps native input defaults and local handlers intact',()=>{
+  const root=new EventTarget();
+  const clear=isolatePanelEvents(root);
+  let localHandlers=0;
+  root.addEventListener('keydown',()=>localHandlers++);
+  for(const type of ['keydown','keypress','keyup','beforeinput','input','compositionstart','compositionend','paste','focusin','click']) {
+    const event=new Event(type,{bubbles:true,cancelable:true,composed:true});
+    root.dispatchEvent(event);
+    assert.equal(event.cancelBubble,true,type+' must be isolated');
+    assert.equal(event.defaultPrevented,false,type+' must retain native input behavior');
+  }
+  assert.equal(localHandlers,1,'stopPropagation must not cancel same-root handlers');
+  clear();
+  const later=new Event('keydown',{bubbles:true});
+  root.dispatchEvent(later);
+  assert.equal(later.cancelBubble,false,'listener cleanup must restore propagation');
 });
