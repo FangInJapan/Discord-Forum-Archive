@@ -466,9 +466,8 @@ export class ArchiveApp {
         element('button',{class:'primary',text:'加入「'+this.selectedFolder().name+'」',onclick:submit(async()=>{
           const parsed=parseLink(url.value),known=this.store.records.get(identity(parsed));
           if(known){close();this.toast('这条帖子已经收藏。');return;}
-          const c=this.adapter.inspect();
-          const sameForum=c.type==='forum'&&c.guildId===parsed.guildId;
-          const info={...parsed,forumId:sameForum?c.forumId:null,forumName:sameForum?c.forumName:'',
+          const c=this.adapter.inspect(),matched=this.adapter.links?.get(identity(parsed));
+          const info={...parsed,forumId:matched?.forumId||null,forumName:matched?.forumName||'',
             guildName:c.guildId===parsed.guildId?c.guildName||'':'',
             originalTitle:title.value.trim()||'',collectionId:this.selectedFolder().id};
           await this.store.add(makeRecord(info,'manual-link'));
