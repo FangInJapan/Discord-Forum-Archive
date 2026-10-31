@@ -26,12 +26,19 @@ try {
   assert.equal(await page.getByRole('button',{name:'切换星标',exact:true}).getAttribute('aria-pressed'),'true');
   // Compact-card hierarchy: left stack (star/time), central title, right stack (more/refresh).
   const card=page.getByRole('region',{name:'收藏列表'}).getByRole('article').first();
-  const starBox=await card.getByRole('button',{name:'切换星标'}).boundingBox();
-  const ageBox=await card.locator('.post-age').boundingBox();
-  const titleBox=await card.locator('.card-title').boundingBox();
-  const moreBox=await card.getByRole('button',{name:'帖子更多操作'}).boundingBox();
-  const reloadBox=await card.getByRole('button',{name:'重新读取标题'}).boundingBox();
-  assert.ok(starBox&&ageBox&&titleBox&&moreBox&&reloadBox,JSON.stringify({starBox,ageBox,titleBox,moreBox,reloadBox,panelHidden:await page.locator('.panel').getAttribute('hidden')}));
+  await card.getByRole('button',{name:'重新读取标题'}).waitFor({state:'visible'});
+  const positions=await card.evaluate(node=>{
+    const rect=selector=>{
+      const element=node.querySelector(selector);if(!element)return null;
+      const box=element.getBoundingClientRect();
+      return {x:box.x,y:box.y,width:box.width,height:box.height};
+    };
+    return {star:rect('.star'),age:rect('.post-age'),title:rect('.card-title'),
+      more:rect('.more'),reload:rect('.reload-title')};
+  });
+  const {star:starBox,age:ageBox,title:titleBox,more:moreBox,reload:reloadBox}=positions;
+  assert.ok([starBox,ageBox,titleBox,moreBox,reloadBox].every(box=>box&&box.width>0&&box.height>0),
+    'all compact-card controls must be rendered: '+JSON.stringify(positions));
   assert.ok(ageBox.y>=starBox.y+starBox.height-1,'timestamp must appear below star');
   assert.ok(reloadBox.y>=moreBox.y+moreBox.height-1,'refresh must appear below ellipsis');
   assert.ok(titleBox.x>starBox.x&&moreBox.x>titleBox.x,'title occupies central column');
