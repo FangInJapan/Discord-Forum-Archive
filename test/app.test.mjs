@@ -38,6 +38,12 @@ test('layout modes, DM hiding and explicit recovery retain original dimensions',
   try {
     a.context={type:'forum',guildId:G};a.layout();assert.equal(a.panel.hidden,false);assert.equal(a.tab.hidden,true);
     a.prefs.mode='collapsed';a.layout();assert.equal(a.panel.hidden,true);assert.equal(a.tab.hidden,false);
+    a.prefs.mode='collapsed';a.context={type:'unknown',guildId:G};a.layout();
+    assert.equal(a.panel.hidden,true);assert.equal(a.tab.hidden,false,'temporary unknown route must preserve collapsed mode');
+    a.prefs.mode='expanded';a.context={type:'unknown',guildId:G};a.layout();
+    assert.equal(a.panel.hidden,false,'temporary unknown route must preserve expanded mode');
+    a.context={type:'thread',guildId:G,threadId:T};a.layout();
+    assert.equal(a.panel.hidden,false,'opening a thread must preserve expanded mode');
     a.prefs.mode='expanded';a.context={type:'dm'};a.layout();assert.equal(a.panel.hidden,true);assert.equal(a.tab.hidden,true);
     a.force=true;a.layout();assert.equal(a.panel.hidden,false);assert.equal(a.prefs.width,620);assert.equal(a.prefs.height,500);
     a.prefs.mode='hidden';a.layout();assert.equal(a.panel.hidden,true);assert.equal(a.tab.hidden,true);
@@ -89,4 +95,12 @@ test('focus inside a Shadow DOM input marks host editable for document-capture s
   root.activeElement=textbox;fire('focusin',textbox);
   clear();
   assert.equal(host.getAttribute('contenteditable'),null);
+});
+
+test('recent update filter preferences persist per server and do not reset scope',async()=>{
+  const {a}=app();a.context={type:'forum',guildId:G,forumId:F};
+  a.scope={value:'server'};a.sort={value:'saved-desc'};a.updateToggle={value:'changed'};
+  await a.filterChange();
+  assert.deepEqual(a.currentFilter(),{scope:'server',sort:'saved-desc',updates:'changed'});
+  assert.equal(a.prefs.filters[G].updates,'changed');
 });
