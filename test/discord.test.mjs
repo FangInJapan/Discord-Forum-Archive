@@ -66,3 +66,8 @@ test('native capture requires stable inverse state, same route/control/profile (
 test('untrusted clicks are ignored',()=>{
   const {adapter}=fake();assert.doesNotThrow(()=>adapter.handleClick({isTrusted:false}));assert.equal(adapter.pending,null);
 });
+
+test('additional localized joined/following labels are recognized',()=>{
+  for(const value of ['Following','Joined Thread','已关注','正在关注','已關注','フォロー中','参加中'])assert.ok(UNFOLLOW.test(value),value);
+  assert.ok(FOLLOW.test('Follow Thread'));
+});
