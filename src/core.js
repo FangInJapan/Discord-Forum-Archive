@@ -1,5 +1,5 @@
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-export const VERSION = '1.1.2';
+export const VERSION = '1.2.0';
 export const SCHEMA = 1;
 export const PREFIX = 'dfa:v1:';
 export const ID = /^[0-9]{16,22}$/;
@@ -8,7 +8,7 @@ export const SOURCES = ['manual-page', 'manual-link', 'native-follow', 'import']
 export const SORTS = ['saved-desc', 'saved-asc', 'modified-desc', 'modified-asc', 'title-asc', 'title-desc', 'starred'];
 export const DEFAULTS = Object.freeze({
   theme: 'discord', titleSize: 15, uiSize: 13, lines: 4, density: 'standard',
-  snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true,
+  snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true, glass: true, motion: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
   width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {},
   folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}
@@ -51,7 +51,10 @@ export function validateRecord(raw) {
     modifiedAt: time(raw.modifiedAt, '修改'), lastObservedAt: raw.lastObservedAt === null ? null : time(raw.lastObservedAt, '观察'),
     source: raw.source, starred: raw.starred, nativeFollowState: raw.nativeFollowState,
     collectionId: raw.collectionId ?? 'default',
-    titleUpdatedAt: raw.titleUpdatedAt == null ? null : time(raw.titleUpdatedAt,'标题更新时间')
+    titleUpdatedAt: raw.titleUpdatedAt == null ? null : time(raw.titleUpdatedAt,'标题更新时间'),
+    previousSeenTitle: raw.previousSeenTitle == null ? null : string(raw.previousSeenTitle,'上一次帖子标题'),
+    titleChangedAt: raw.titleChangedAt == null ? null : time(raw.titleChangedAt,'标题变化时间'),
+    changeUnread: raw.changeUnread === undefined ? false : (typeof raw.changeUnread === 'boolean' ? raw.changeUnread : (()=>{throw new Error('标题变更状态不合法。');})())
   };
 }
 export function makeRecord(info, source = 'manual-link', now = Date.now()) {
@@ -60,19 +63,19 @@ export function makeRecord(info, source = 'manual-link', now = Date.now()) {
     originalTitle: info.originalTitle || `帖子 ${info.threadId}`, customTitle: null,
     savedAt: now, modifiedAt: now, lastObservedAt: source === 'manual-page' || source === 'native-follow' ? now : null,
     source, starred: false, nativeFollowState: source === 'native-follow' ? 'following' : 'unknown',
-    collectionId: info.collectionId || 'default', titleUpdatedAt: info.originalTitle ? now : null });
+    collectionId: info.collectionId || 'default', titleUpdatedAt: info.originalTitle ? now : null, previousSeenTitle:null, titleChangedAt:null, changeUnread:false });
 }
 export function validatePatch(raw) {
-  const allowed = ['forumId', 'forumName', 'guildName', 'originalTitle', 'customTitle', 'starred', 'lastObservedAt', 'nativeFollowState','collectionId','titleUpdatedAt'];
+  const allowed = ['forumId', 'forumName', 'guildName', 'originalTitle', 'customTitle', 'starred', 'lastObservedAt', 'nativeFollowState','collectionId','titleUpdatedAt','previousSeenTitle','titleChangedAt','changeUnread'];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(k => !allowed.includes(k))) throw new Error('修改字段不合法。');
   const out = {};
   for (const [k,v] of Object.entries(raw)) {
     if (k === 'forumId') { if (v !== null && (typeof v !== 'string' || !ID.test(v))) throw new Error('父频道 ID 不合法。'); }
-    else if (k === 'starred') { if (typeof v !== 'boolean') throw new Error('星标格式错误。'); }
-    else if (k === 'lastObservedAt' || k === 'titleUpdatedAt') { if (v !== null) time(v, k); }
+    else if (k === 'starred' || k === 'changeUnread') { if (typeof v !== 'boolean') throw new Error('布尔值字段格式错误。'); }
+    else if (k === 'lastObservedAt' || k === 'titleUpdatedAt' || k === 'titleChangedAt') { if (v !== null) time(v, k); }
     else if (k === 'collectionId') { if(typeof v !== 'string' || !FOLDER_ID.test(v)) throw new Error('收藏夹 ID 不合法。'); }
     else if (k === 'nativeFollowState') { if (!['unknown', 'following'].includes(v)) throw new Error('状态格式错误。'); }
-    else if (!(k === 'customTitle' && v === null)) string(v, k, k.endsWith('Name') ? 500 : 20000);
+    else if (!(k === 'customTitle' && v === null) && !(k === 'previousSeenTitle' && v===null)) string(v, k, k.endsWith('Name') ? 500 : 20000);
     out[k] = v;
   }
   return out;
@@ -152,7 +155,16 @@ export class ArchiveStore {
     await this.refresh(); const r = this.records.get(identity(info));
     if (!r) return null;
     const patch = {};
-    if (info.originalTitle && info.originalTitle !== r.originalTitle) { patch.originalTitle = info.originalTitle; patch.titleUpdatedAt = Date.now(); }
+    if (info.originalTitle && info.originalTitle !== r.originalTitle) {
+      const now=Date.now();
+      patch.originalTitle = info.originalTitle; patch.titleUpdatedAt = now;
+      // Placeholder titles are not proof of an actual Discord title change.
+      if (r.originalTitle && r.originalTitle !== `帖子 ${r.threadId}`) {
+        patch.previousSeenTitle = r.originalTitle;
+        patch.titleChangedAt = now;
+        patch.changeUnread = true;
+      }
+    }
     if (!r.forumId && info.forumId) { patch.forumId = info.forumId; patch.forumName = info.forumName || ''; }
     if (!r.guildName && info.guildName) patch.guildName = info.guildName;
     if (followed && r.nativeFollowState !== 'following') patch.nativeFollowState = 'following';
@@ -160,10 +172,11 @@ export class ArchiveStore {
     patch.lastObservedAt = Date.now(); return this.patch(identity(r),patch);
   }
 }
-export function selectRecords(records, { guildId, forumId, scope = 'forum', collectionId = null, query = '', sort = 'saved-desc' }) {
+export function selectRecords(records, { guildId, forumId, scope = 'forum', collectionId = null, updates = 'all', query = '', sort = 'saved-desc' }) {
   const q = query.normalize('NFKC').toLocaleLowerCase();
   const result = [...records].filter(r => r.guildId === guildId && (scope === 'server' || r.forumId === (forumId ?? null)) &&
     (collectionId === null || (r.collectionId || 'default') === collectionId) &&
+    (updates !== 'changed' || r.changeUnread === true) &&
     [r.customTitle || '',r.originalTitle,r.forumName].some(s => s.normalize('NFKC').toLocaleLowerCase().includes(q)));
   const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
   result.sort((a,b) => {
@@ -203,7 +216,7 @@ export async function mergeImport(store, records, policy = 'preserve') {
     await store.refresh(); const old = store.records.get(identity(r));
     if (!old) { await store.add(r); added++; }
     else if (policy === 'incoming') {
-      await store.patch(identity(r),{ customTitle:r.customTitle, starred:r.starred, forumId:r.forumId, forumName:r.forumName, guildName:r.guildName, originalTitle:r.originalTitle, collectionId:r.collectionId, titleUpdatedAt:r.titleUpdatedAt }); updated++;
+      await store.patch(identity(r),{ customTitle:r.customTitle, starred:r.starred, forumId:r.forumId, forumName:r.forumName, guildName:r.guildName, originalTitle:r.originalTitle, collectionId:r.collectionId, titleUpdatedAt:r.titleUpdatedAt,previousSeenTitle:r.previousSeenTitle,titleChangedAt:r.titleChangedAt,changeUnread:r.changeUnread }); updated++;
     }
   }
   return {added,updated};
@@ -234,11 +247,11 @@ export function cleanPrefs(raw) {
   const p = { ...DEFAULTS };
   if (!raw || typeof raw !== 'object') return p;
   for (const [k,opts] of Object.entries({theme:['discord','dark','light'],density:['compact','standard','relaxed'],mode:['expanded','collapsed','hidden'],dock:['none','left','right','top','bottom'],defaultScope:['forum','server'],defaultSort:SORTS})) if (opts.includes(raw[k])) p[k] = raw[k];
-  for (const k of ['snap','hover','autoFollow','debug','autoOpen']) if (typeof raw[k] === 'boolean') p[k] = raw[k];
+  for (const k of ['snap','hover','autoFollow','debug','autoOpen','glass','motion']) if (typeof raw[k] === 'boolean') p[k] = raw[k];
   for (const [k,min,max] of [['titleSize',12,22],['uiSize',11,18],['width',300,760],['height',240,2000],['x',0,1],['y',0,1]]) if (typeof raw[k] === 'number' && Number.isFinite(raw[k])) p[k] = Math.max(min,Math.min(max,raw[k]));
   if ([0,1,2,3,4].includes(raw.lines)) p.lines = raw.lines;
   p.filters = {};
-  if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:f.scope,sort:f.sort};
+  if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:f.scope,sort:f.sort,updates:f.updates==='changed'?'changed':'all'};
   p.folders=validateFolders(raw.folders);
   p.folderSelections={};
   if(raw.folderSelections&&typeof raw.folderSelections==='object')for(const [guild,id] of Object.entries(raw.folderSelections)) {
