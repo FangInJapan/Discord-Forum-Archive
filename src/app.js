@@ -16,7 +16,7 @@ export function element(tag, attrs = {}, ...children) {
 // Discord listens for keyboard shortcuts above the userscript's Shadow DOM.
 // Consume bubbling UI events at the ShadowRoot boundary after native controls
 // have received them, without cancelling their default typing/IME behaviour.
-export function isolatePanelEvents(root) {
+export function isolatePanelEvents(root, host = root.host) {
   const types = [
     'keydown','keypress','keyup','beforeinput','input',
     'compositionstart','compositionupdate','compositionend',
@@ -24,8 +24,37 @@ export function isolatePanelEvents(root) {
     'pointerdown','pointerup','mousedown','mouseup','click','dblclick','contextmenu'
   ];
   const stop = event => event.stopPropagation();
+  // Outside a Shadow DOM, Discord sees the shadow host as the keyboard target,
+  // not the real input. Temporarily exposing the host as editable also prevents
+  // capture-phase shortcuts that use target.isContentEditable as a guard.
+  const editSelector = 'input:not([type="checkbox"]):not([type="range"]):not([type="radio"]):not([type="button"]):not([type="submit"]),textarea,[contenteditable="true"]';
+  const priorEditable=host?.getAttribute?.('contenteditable');
+  const priorTabindex=host?.getAttribute?.('tabindex');
+  const mark = target => {
+    if(!host?.setAttribute)return;
+    if(target?.matches?.(editSelector)){
+      host.setAttribute('contenteditable','true');
+      host.setAttribute('tabindex','-1');
+    }else {
+      host.removeAttribute('contenteditable');
+      if(priorTabindex===null)host.removeAttribute('tabindex');
+      else host.setAttribute('tabindex',priorTabindex);
+    }
+  };
+  const entering = event => mark(event.target);
+  const leaving = () => queueMicrotask(()=>mark(root.activeElement));
   for (const type of types) root.addEventListener(type,stop);
-  return () => {for(const type of types)root.removeEventListener(type,stop);};
+  root.addEventListener('focusin',entering);
+  root.addEventListener('focusout',leaving);
+  return () => {
+    for(const type of types)root.removeEventListener(type,stop);
+    root.removeEventListener('focusin',entering);
+    root.removeEventListener('focusout',leaving);
+    if(host?.setAttribute){
+      if(priorEditable===null)host.removeAttribute('contenteditable');else host.setAttribute('contenteditable',priorEditable);
+      if(priorTabindex===null)host.removeAttribute('tabindex');else host.setAttribute('tabindex',priorTabindex);
+    }
+  };
 }
 export class ArchiveApp {
   constructor(storage, href = ()=>location.href) {
