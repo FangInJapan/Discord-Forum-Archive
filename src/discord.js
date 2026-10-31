@@ -1,12 +1,16 @@
 import {canonical,ID,identity,parseLink} from './core.js';
 // Only visible DOM and route information. No webpack stores, token access, or HTTP interception.
-export const FOLLOW = /^(?:关注(?:帖子|讨论串)?|加入(?:帖子|讨论串)?|追踪(?:帖子)?|訂閱(?:帖子)?)$/;
-export const UNFOLLOW = /^(?:取消关注(?:帖子)?|已关注|正在关注|退出(?:帖子|讨论串)?|取消加入|已加入|已追踪)$/;
+export const FOLLOW = /^(?:关注(?:帖子|讨论串|此帖)?|加入(?:帖子|讨论串)?|追踪(?:帖子)?)$/;
+export const UNFOLLOW = /^(?:取消关注(?:帖子|此帖)?|停止关注|已关注|正在关注|退出(?:帖子|讨论串)?|取消加入|已加入|已追踪)$/;
 const CREATE = /^(?:新建帖子|创建帖子|发布帖子|发表帖子|发起帖子)$/;
 export function normalizeThreadTitle(value) {
   const source=String(value||'').replace(/\s+/g,' ').trim();
-  // Strip the extra Discord UI tab label without altering normal in-title occurrences.
-  return source.replace(/(?:[\s|｜·]+聊天|】聊天)$/u,'').trim() || source;
+  // Preserve a closing bracket when Discord appends the Chinese "聊天" UI label.
+  let cleaned=source.replace(/[\s|｜·]+聊天$/u,'');
+  if(cleaned===source && source.endsWith('】聊天'))cleaned=source.slice(0,-2);
+  // Long forum titles may have the UI label appended without a separator.
+  if(cleaned===source && source.length>=40 && source.endsWith('聊天'))cleaned=source.slice(0,-2);
+  return cleaned.trim() || source;
 }
 export function controlLabel(el) { return (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim(); }
 export function visible(el) { return !!el && !el.closest('[hidden],[aria-hidden="true"]') && el.getClientRects().length > 0; }
