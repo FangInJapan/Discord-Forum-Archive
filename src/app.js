@@ -194,16 +194,16 @@ export class ArchiveApp {
     const old=this.context, oldKey=`${old.guildId}:${old.forumId || old.channelId}`;
     this.scroll.set(oldKey,this.list.scrollTop);
     this.context=c; const key=`${c.guildId}:${c.forumId || c.channelId}`;
-    if(key!==oldKey) {this.force=false;this.query='';this.search.value='';this.limit=80;}
+    if(key!==oldKey) {this.query='';this.search.value='';this.limit=80;}
     this.updateContext();this.renderList();this.layout();this.list.scrollTop=this.scroll.get(key)||0;
     if(c.type==='thread' && this.store) await this.store.observe(c);
   }
   currentFilter() {
-    return this.prefs.filters[this.context.guildId] || {scope:this.prefs.defaultScope,sort:this.prefs.defaultSort};
+    return {...{scope:this.prefs.defaultScope,sort:this.prefs.defaultSort,updates:'all'},...(this.prefs.filters[this.context.guildId]||{})};
   }
   async filterChange() {
     if(!this.profile)return this.chooseProfile();
-    const filters={...this.prefs.filters,[this.context.guildId]:{scope:this.scope.value,sort:this.sort.value}};
+    const filters={...this.prefs.filters,[this.context.guildId]:{scope:this.scope.value,sort:this.sort.value,updates:this.updateToggle.value}};
     await this.savePrefs({filters});this.limit=80;this.renderList();
   }
   updateContext() {
@@ -215,6 +215,10 @@ export class ArchiveApp {
     this.profileEl.textContent=this.profile ? this.profile.name : '';
     this.scope.value=f.scope; this.scope.textContent=f.scope==='forum'?'本频道':'全服务器';
     this.scope.setAttribute('aria-checked',String(f.scope==='server'));
+    this.updateToggle.value=f.updates==='changed'?'changed':'all';
+    this.updateToggle.textContent=f.updates==='changed'?'最近更新':'全部';
+    this.updateToggle.setAttribute('aria-checked',String(f.updates==='changed'));
+    this.updateToggle.title=f.updates==='changed'?'只显示标题发生变化且尚未标记已查看的帖子':'显示全部收藏';
     this.sort.value=f.sort; this.sort.title=this.sort.selectedOptions?.[0]?.textContent||'排序';
     this.collectionButton.textContent=this.selectedFolder().name+' ▾';
     const saved=this.store && c.type==='thread' && this.store.records.has(identity(c));
@@ -309,6 +313,7 @@ export class ArchiveApp {
     this.dialog('帖子操作',(body,close,submit)=>{
       body.append(element('p',{class:'muted',text:record.customTitle??record.originalTitle}));
       const actions=[
+        ...(record.changeUnread?[['标记标题变化为已查看',()=>this.store.patch(identity(record),{changeUnread:false})]]:[]),
         ['编辑',()=>this.editDialog(record)],
         ['复制链接',()=>this.copy(record.url)],
         ['删除收藏',()=>this.deleteDialog(record)]
@@ -351,6 +356,9 @@ export class ArchiveApp {
       this.scope.value=this.scope.value==='forum'?'server':'forum';await this.filterChange();
     })});
     this.scope.value='forum';
+    this.updateToggle=element('button',{class:'update-toggle',role:'switch','aria-label':'全部或最近更新',onclick:this.safe(async()=>{
+      this.updateToggle.value=this.updateToggle.value==='changed'?'all':'changed';await this.filterChange();
+    })});this.updateToggle.value='all';
     this.collectionButton=element('button',{class:'collection-select',title:'选择或管理收藏夹',onclick:this.safe(()=>this.folderDialog())});
     this.sort=element('select',{'aria-label':'排序方式'},...SORTS.map((v,i)=>element('option',{value:v,text:['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A→Z','标题 Z→A','星标优先'][i]})));
     this.sort.addEventListener('change',this.safe(()=>this.filterChange()));
@@ -359,7 +367,7 @@ export class ArchiveApp {
     this.list=element('div',{class:'list',role:'region','aria-label':'收藏列表',tabindex:'0'});
     this.count=element('span',{role:'status'});
     this.panel.append(this.header,this.contextEl,
-      element('div',{class:'tools'},this.search,element('div',{class:'filters'},this.scope,this.collectionButton,sortSlot),this.pageSave),
+      element('div',{class:'tools'},this.search,element('div',{class:'filters'},this.scope,this.updateToggle,this.collectionButton,sortSlot),this.pageSave),
       this.list,element('footer',{class:'footer'},this.count,btn('⟳ 更新可见标题','刷新当前页面可见收藏的标题',()=>this.refreshVisibleTitles(),'refresh-titles')));
     this.tab=btn('关注帖','展开收藏面板',()=>this.setMode('expanded',true),'tab');
     this.tab.addEventListener('mouseenter',()=> {if(this.prefs.hover)this.safe(()=>this.setMode('expanded',true))();});
@@ -379,16 +387,15 @@ export class ArchiveApp {
     if(!this.panel)return;
     const p=this.prefs,c=this.context;
     let mode=p.mode;
-    if(!this.force && mode!=='hidden') {
-      if(c.type==='dm')mode='hidden';
-      else if(c.type!=='forum' && c.type!=='thread')mode='collapsed';
-      else if(!p.autoOpen)mode='collapsed';
-    }
+    // Navigation must never rewrite the user-selected expanded/collapsed state.
+    // Transient unknown routes during Discord SPA transitions are ignored.
+    if(!this.force && c.type==='dm')mode='hidden';
     this.panel.hidden=mode!=='expanded';this.tab.hidden=mode!=='collapsed';
     this.quick.hidden=!(this.profile && c.type==='thread' && mode==='collapsed');
     const rect=geometry(p,{width:innerWidth,height:innerHeight},mode==='collapsed');
     const node=mode==='collapsed'?this.tab:this.panel;
     Object.assign(node.style,{left:`${rect.x}px`,top:`${rect.y}px`,width:`${rect.width}px`,height:`${rect.height}px`});
+    this.host.dataset.glass=p.glass?'on':'off';this.host.dataset.motion=p.motion?'on':'off';
     this.host.style.setProperty('--title-size',`${p.titleSize}px`);this.host.style.setProperty('--ui-size',`${p.uiSize}px`);
     this.host.style.setProperty('--title-lines',String(p.lines || 99999));this.host.style.setProperty('--spacing',({compact:'7px',standard:'10px',relaxed:'15px'})[p.density]);
   }
@@ -437,7 +444,7 @@ export class ArchiveApp {
     const frag=document.createDocumentFragment();let records=[];
     if(this.store && this.context.guildId)records=selectRecords(this.store.records.values(),{...this.context,...this.currentFilter(),collectionId:this.selectedFolder().id,query:this.query});
     this.count.textContent=`${records.length} 条 · 资料库共 ${this.store?.records.size || 0} 条`;
-    if(!records.length)frag.append(element('div',{class:'empty',text:!this.profile?'选择资料库后即可开始收藏。':!this.context.guildId?'请进入服务器查看收藏。':this.query?'没有匹配的收藏。':this.context.forumId?'此筛选下还没有收藏。':'此页未确定父论坛；显示本服务器待归属收藏。可切换“整个服务器”。'}));
+    if(!records.length)frag.append(element('div',{class:'empty',text:!this.profile?'选择资料库后即可开始收藏。':!this.context.guildId?'请进入服务器查看收藏。':this.query?'没有匹配的收藏。':this.currentFilter().updates==='changed'?'目前没有尚未查看的标题变化。':this.context.forumId?'此筛选下还没有收藏。':'此页未确定父论坛；显示本服务器待归属收藏。可切换“整个服务器”。'}));
     const shortDate=v=>{
       if(v==null)return '—';
       const days=Math.max(0,Math.floor((Date.now()-v)/86400000));
@@ -455,7 +462,8 @@ export class ArchiveApp {
       star.setAttribute('data-focus',key+':star');
       const starColumn=element('div',{class:'card-side card-side-start'},star,when);
       const actionColumn=element('div',{class:'card-side card-side-end'},more,reload);
-      frag.append(element('article',{class:'card compact-card'},starColumn,link,actionColumn));
+      if(r.changeUnread){link.title='标题已变化：'+(r.previousSeenTitle||'未知')+' → '+r.originalTitle;}
+      frag.append(element('article',{class:'card compact-card'+(r.changeUnread?' title-changed':''),...(r.changeUnread?{'aria-label':'标题近期发生变化'}:{})},starColumn,link,actionColumn));
     }
     if(records.length>this.limit)frag.append(element('button',{class:'pager',text:`继续显示（剩余 ${records.length-this.limit} 条）`,onclick:()=>{this.limit+=80;this.renderList();}}));
     this.list.replaceChildren(frag);this.list.scrollTop=oldScroll;
