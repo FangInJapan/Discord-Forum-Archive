@@ -7,23 +7,23 @@ function app() {
   const data=new Map();const storage={get:async(k,d)=>structuredClone(data.has(k)?data.get(k):d),set:async(k,v)=>data.set(k,structuredClone(v)),list:async()=>[...data.keys()]};
   const a=new ArchiveApp(storage,()=>`https://discord.com/channels/${G}/${T}`);a.profile={id:'profile-school',name:'School'};a.store=new ArchiveStore(storage,a.profile.id);
   const messages=[];a.toast=(...args)=>messages.push(args);a.renderList=()=>{};a.updateContext=()=>{};
-  a.adapter={inspect:()=>({type:'thread',guildId:G,threadId:T,forumId:null,originalTitle:'Complete title'})};
+  a.adapter={inspect:()=>({type:'thread',guildId:G,threadId:T,forumId:null,originalTitle:'完整标题'}),title:()=>'',main:()=>null};
   return {a,data,messages};
 }
-test('manual page save succeeds only after persisted record; repeated save opens management',async()=>{
+test('manual page save succeeds and repeated save is idempotent',async()=>{
   const {a,messages}=app();await a.saveCurrent();assert.equal(a.store.records.size,1);assert.equal(messages.length,1);
-  let edited=false;a.editDialog=()=>edited=true;await a.saveCurrent();assert.equal(edited,true);assert.equal(a.store.records.size,1);
+  await a.saveCurrent();assert.equal(a.store.records.size,1);assert.equal(messages.length,2);
 });
 test('application does not issue success toast when storage write fails',async()=>{
   const {a,messages}=app();a.storage.set=async()=>{throw new Error('quota');};
   await assert.rejects(a.saveCurrent(),/quota/);assert.equal(messages.length,0);assert.equal(a.store.records.size,0);
 });
-test('unrecognized page falls back to explicit link dialog without automatic capture',async()=>{
-  const {a}=app();a.adapter.inspect=()=>({type:'unknown',guildId:G,channelId:F});let shown=false;
-  a.addDialog=()=>shown=true;await a.saveCurrent();assert.ok(shown);assert.equal(a.store.records.size,0);
+test('unrecognized direct post URL saves with unknown parent after one click',async()=>{
+  const {a}=app();a.adapter.inspect=()=>({type:'unknown',guildId:G,channelId:T});
+  await a.saveCurrent();assert.equal(a.store.records.size,1);assert.equal([...a.store.records.values()][0].forumId,null);
 });
 test('follow capture is opt-in and never overwrites a custom name',async()=>{
-  const {a}=app(),c=a.adapter.inspect();await a.capture(c);assert.equal(a.store.records.size,0);
+  const {a}=app(),c=a.adapter.inspect();a.prefs.autoFollow=false;await a.capture(c);assert.equal(a.store.records.size,0);
   a.prefs.autoFollow=true;await a.store.add(makeRecord(c));await a.store.patch(identity(c),{customTitle:'My name'});
   await a.capture({...c,originalTitle:'Remote changed'});assert.equal(a.store.records.get(identity(c)).customTitle,'My name');assert.equal(a.store.records.get(identity(c)).originalTitle,'Remote changed');
 });
