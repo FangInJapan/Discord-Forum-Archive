@@ -213,8 +213,9 @@ export function validateFolders(input) {
   if(!Array.isArray(input))return output;
   for(const folder of input.slice(0,200)) {
     if(!folder||typeof folder.id!=='string'||!FOLDER_ID.test(folder.id)||
-      typeof folder.name!=='string'||!folder.name.trim()||folder.name.length>80||seen.has(folder.id))continue;
+      typeof folder.name!=='string'||!folder.name.trim()||folder.name.length>80)continue;
     if(folder.id==='default'){output[0].name=folder.name.trim();continue;}
+    if(seen.has(folder.id))continue;
     output.push({id:folder.id,name:folder.name.trim()});seen.add(folder.id);
   }
   return output;
