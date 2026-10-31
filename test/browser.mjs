@@ -31,7 +31,7 @@ try {
   const titleBox=await card.locator('.card-title').boundingBox();
   const moreBox=await card.getByRole('button',{name:'帖子更多操作'}).boundingBox();
   const reloadBox=await card.getByRole('button',{name:'重新读取标题'}).boundingBox();
-  assert.ok(starBox&&ageBox&&titleBox&&moreBox&&reloadBox,'all compact-card controls exist');
+  assert.ok(starBox&&ageBox&&titleBox&&moreBox&&reloadBox,JSON.stringify({starBox,ageBox,titleBox,moreBox,reloadBox,panelHidden:await page.locator('.panel').getAttribute('hidden')}));
   assert.ok(ageBox.y>=starBox.y+starBox.height-1,'timestamp must appear below star');
   assert.ok(reloadBox.y>=moreBox.y+moreBox.height-1,'refresh must appear below ellipsis');
   assert.ok(titleBox.x>starBox.x&&moreBox.x>titleBox.x,'title occupies central column');
