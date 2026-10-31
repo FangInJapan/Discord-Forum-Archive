@@ -49,8 +49,28 @@ try {
   await page.keyboard.press('Escape');
   await card.getByRole('button',{name:'重新读取标题'}).click();
 
+  // Observed title changes appear only in the new '最近更新' filter.
+  await page.evaluate(async()=>{
+    await window.fixtureApp.store.observe({
+      guildId:'111111111111111111',threadId:'333333333333333333',originalTitle:'已确认更名的论坛帖子'
+    });
+  });
+  const updateSwitch=page.getByRole('switch',{name:'全部或最近更新'});
+  await updateSwitch.click();
+  assert.equal(await updateSwitch.getAttribute('aria-checked'),'true');
+  await page.getByRole('region',{name:'收藏列表'}).getByRole('article').first().waitFor();
+  assert.equal(await page.locator('article.title-changed').count(),1);
+  await page.getByRole('button',{name:'帖子更多操作'}).click();
+  await page.getByRole('dialog',{name:'帖子操作'}).getByRole('button',{name:'标记标题变化为已查看'}).click();
+  await page.getByRole('region',{name:'收藏列表'}).getByText('目前没有尚未查看的标题变化。').waitFor();
+  await updateSwitch.click();
+  assert.equal(await updateSwitch.getAttribute('aria-checked'),'false');
   await page.getByRole('button',{name:'设置',exact:true}).click();
-  await page.getByLabel('实验性：原生关注成功后记录本地收藏').check();await page.getByRole('button',{name:'保存设置',exact:true}).click();
+  const settings=page.getByRole('dialog',{name:'Forum Archive 设置'});
+  await settings.getByRole('tab',{name:'外观'}).waitFor();
+  assert.equal(await settings.getByLabel('玻璃质感与柔和高光').isChecked(),true);
+  await settings.getByRole('tab',{name:'收藏'}).click();
+  await page.getByLabel('自动记录已确认的原生关注').check();await page.getByRole('button',{name:'保存设置',exact:true}).click();
   await page.locator('#thread').click();await page.locator('#follow').click();
   await page.getByRole('button',{name:'独立帖子收藏入口'}).waitFor({state:'hidden'});
   await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:'父频道未知 · 直接访问帖子',exact:true}).waitFor();
@@ -71,7 +91,22 @@ try {
   assert.equal(await composer.textContent(),'outside','Discord editor should still type normally');
   await search.fill('');
 
-  await page.getByRole('button',{name:'折叠面板',exact:true}).click();await page.getByRole('button',{name:'展开收藏面板',exact:true}).click();
+  await page.getByRole('button',{name:'折叠面板',exact:true}).click();
+  await page.getByRole('button',{name:'展开收藏面板',exact:true}).waitFor();
+  await page.locator('#forum').click();
+  await page.waitForFunction(()=>window.fixtureApp.context.type==='forum');
+  assert.equal(await page.getByRole('button',{name:'展开收藏面板'}).isVisible(),true,'manual collapsed mode survives opening forum');
+  await page.locator('#thread').click();
+  await page.waitForFunction(()=>window.fixtureApp.context.type==='thread');
+  assert.equal(await page.getByRole('button',{name:'展开收藏面板'}).isVisible(),true,'manual collapsed mode survives thread navigation');
+  await page.getByRole('button',{name:'展开收藏面板',exact:true}).click();
+  await page.getByRole('button',{name:'折叠面板',exact:true}).waitFor();
+  await page.locator('#forum').click();
+  await page.waitForFunction(()=>window.fixtureApp.context.type==='forum');
+  assert.equal(await page.getByRole('button',{name:'折叠面板'}).isVisible(),true,'manual expanded mode survives forum navigation');
+  await page.locator('#thread').click();
+  await page.waitForFunction(()=>window.fixtureApp.context.type==='thread');
+  assert.equal(await page.getByRole('button',{name:'折叠面板'}).isVisible(),true,'manual expanded mode survives thread navigation');
   await page.locator('#theme').click();
   await page.locator('#audit').click();const report=await page.locator('#fixture-log').textContent();assert.ok(!report.includes('FAIL'),report);
   await mkdir('test-output',{recursive:true});
