@@ -1,0 +1,15 @@
+{
+  "name": "discord-forum-archive",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first Discord forum bookmarks for Tampermonkey",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/build.mjs --check",
+    "test:browser": "node test/browser.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "devDependencies": { "playwright": "^1.58.2" }
+}
