@@ -61,3 +61,32 @@ test('Shadow DOM isolation keeps native input defaults and local handlers intact
   root.dispatchEvent(later);
   assert.equal(later.cancelBubble,false,'listener cleanup must restore propagation');
 });
+
+test('focus inside a Shadow DOM input marks host editable for document-capture shortcuts',async()=>{
+  const attrs=new Map();
+  const host={
+    getAttribute:key=>attrs.has(key)?attrs.get(key):null,
+    setAttribute:(key,value)=>attrs.set(key,String(value)),
+    removeAttribute:key=>attrs.delete(key)
+  };
+  const listeners=new Map();
+  const root={host,activeElement:null,
+    addEventListener:(type,fn)=>{if(!listeners.has(type))listeners.set(type,new Set());listeners.get(type).add(fn);},
+    removeEventListener:(type,fn)=>listeners.get(type)?.delete(fn)
+  };
+  const fire=(type,target)=>{
+    const event={type,target,stopPropagation:()=>{}};
+    for(const listener of listeners.get(type)||[])listener(event);
+  };
+  const clear=isolatePanelEvents(root);
+  const textbox={matches:selector=>selector.includes('input:not')};
+  root.activeElement=textbox;fire('focusin',textbox);
+  assert.equal(host.getAttribute('contenteditable'),'true');
+  assert.equal(host.getAttribute('tabindex'),'-1');
+  root.activeElement=null;fire('focusout',textbox);
+  await Promise.resolve();
+  assert.equal(host.getAttribute('contenteditable'),null);
+  root.activeElement=textbox;fire('focusin',textbox);
+  clear();
+  assert.equal(host.getAttribute('contenteditable'),null);
+});
