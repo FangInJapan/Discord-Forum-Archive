@@ -112,9 +112,14 @@ try {
   await mkdir('test-output',{recursive:true});
   await page.screenshot({path:'test-output/smoke.png'});
   await page.setViewportSize({width:375,height:812});
+  await page.waitForFunction(()=>{
+    const panel=window.fixtureApp.panel.getBoundingClientRect();
+    return panel.left>=0&&panel.right<=innerWidth+1;
+  });
   await page.getByRole('region',{name:'收藏列表'}).getByRole('article').first().waitFor();
   const compactBounds=await page.getByRole('region',{name:'收藏列表'}).getByRole('article').first().boundingBox();
-  assert.ok(compactBounds&&compactBounds.x>=0&&compactBounds.x+compactBounds.width<=375,'compact cards must remain within a narrow viewport');
+  assert.ok(compactBounds&&compactBounds.x>=0&&compactBounds.x+compactBounds.width<=375,
+    'compact cards must remain within a narrow viewport: '+JSON.stringify(compactBounds));
   await page.screenshot({path:'test-output/smoke-narrow.png'});
   assert.deepEqual(errors,[]);console.log(report);console.log('Browser fixture smoke checks passed. Not a live Discord/Tampermonkey test.');
 } finally {await browser?.close();await new Promise(r=>server.close(r));}
