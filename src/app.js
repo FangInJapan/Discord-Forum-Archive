@@ -309,7 +309,6 @@ export class ArchiveApp {
     this.dialog('帖子操作',(body,close,submit)=>{
       body.append(element('p',{class:'muted',text:record.customTitle??record.originalTitle}));
       const actions=[
-        ['重新读取标题',()=>this.reloadOneTitle(record)],
         ['编辑',()=>this.editDialog(record)],
         ['复制链接',()=>this.copy(record.url)],
         ['删除收藏',()=>this.deleteDialog(record)]
@@ -451,8 +450,12 @@ export class ArchiveApp {
       const link=element('a',{class:'card-title'+(this.expanded.has(key)||!this.prefs.lines?' full':''),href:r.url,title,'data-focus':key+':open',text:title});
       const star=element('button',{class:'star',text:r.starred?'★':'☆','aria-label':'切换星标','aria-pressed':String(r.starred),onclick:this.safe(()=>this.store.patch(key,{starred:!this.store.records.get(key)?.starred}))});
       const when=element('span',{class:'post-age',title:r.titleUpdatedAt?'上次确认标题变化：'+new Date(r.titleUpdatedAt).toLocaleString():'尚未读取到标题变化时间',text:shortDate(r.titleUpdatedAt)});
-      const more=element('button',{class:'more',text:'⋯','aria-label':'帖子更多操作',onclick:this.safe(()=>this.cardMenu(r))});
-      frag.append(element('article',{class:'card compact-card'},star,when,link,more));
+      const more=element('button',{class:'more',text:'⋯','aria-label':'帖子更多操作',title:'更多操作','data-focus':key+':more',onclick:this.safe(()=>this.cardMenu(r))});
+      const reload=element('button',{class:'reload-title',text:'↻','aria-label':'重新读取标题',title:'重新读取当前可见的帖子标题','data-focus':key+':reload',onclick:this.safe(()=>this.reloadOneTitle(r))});
+      star.setAttribute('data-focus',key+':star');
+      const starColumn=element('div',{class:'card-side card-side-start'},star,when);
+      const actionColumn=element('div',{class:'card-side card-side-end'},more,reload);
+      frag.append(element('article',{class:'card compact-card'},starColumn,link,actionColumn));
     }
     if(records.length>this.limit)frag.append(element('button',{class:'pager',text:`继续显示（剩余 ${records.length-this.limit} 条）`,onclick:()=>{this.limit+=80;this.renderList();}}));
     this.list.replaceChildren(frag);this.list.scrollTop=oldScroll;
