@@ -179,7 +179,7 @@ export class DiscordAdapter {
       const current=this.inspect();
       return current.type==='thread'&&identity(current)===identity(record);
     };
-    const positive=()=>card?this.stateIn(card):this.controls().some(b=>!b.closest('[role="menu"]')&&UNFOLLOW.test(controlLabel(b)));
+    const positive=()=>card?this.stateIn(card):this.controls().some(b=>b.isConnected!==false&&!b.closest('[role="menu"]')&&UNFOLLOW.test(controlLabel(b)));
     const check=()=>{
       if(!valid())return;
       if(positive()){
