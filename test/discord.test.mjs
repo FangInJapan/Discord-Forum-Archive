@@ -61,6 +61,8 @@ async function followScenario({change=true,navigate=false,remove=false,profileCh
 test('native capture requires stable inverse state, same route/control/profile (simulated DOM)',async()=>{
   assert.equal(await followScenario(),1);
   assert.equal(normalizeThreadTitle('帖子标题 · 聊天'),'帖子标题');
+  assert.equal(normalizeThreadTitle('【资源】聊天'),'【资源】');
+  assert.equal(normalizeThreadTitle('【'+ '很长标题'.repeat(12)+'】聊天'),'【'+ '很长标题'.repeat(12)+'】');
   for(const config of [{change:false},{navigate:true},{remove:true},{profileChange:true},{revert:true}])assert.equal(await followScenario(config),0,JSON.stringify(config));
 });
 test('untrusted clicks are ignored',()=>{
