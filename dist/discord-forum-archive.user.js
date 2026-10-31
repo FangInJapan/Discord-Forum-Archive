@@ -284,12 +284,12 @@ class DiscordAdapter {
   controls() {
     const scopes = [...this.doc.querySelectorAll('main header,main [role="toolbar"],[role="main"] header,[role="main"] [role="toolbar"],[role="dialog"] header,[role="dialog"] [role="toolbar"],[class*="threadSidebar"] header,[class*="threadSidebar"] [role="toolbar"],[role="menu"]')];
     return [...new Set(scopes.flatMap(r=>[...r.querySelectorAll('button,[role="button"],[role="menuitem"]')]))]
-      .filter(b=>visible(b) && !b.closest('article,[role="listitem"],[data-list-id="chat-messages"],[id^="chat-messages"]'));
+      .filter(b=>b.isConnected!==false && visible(b) && !b.closest('article,[role="listitem"],[data-list-id="chat-messages"],[id^="chat-messages"]'));
   }
   // A positive joined/following control, not a generic Follow action, is required.
   stateIn(scope) {
-    return !!scope && [...scope.querySelectorAll('button,[role="button"],[role="menuitem"],[aria-label],[title]')]
-      .some(el=>visible(el) && UNFOLLOW.test(controlLabel(el)));
+    return !!scope && scope.isConnected!==false && [...scope.querySelectorAll('button,[role="button"],[role="menuitem"],[aria-label],[title]')]
+      .some(el=>el.isConnected!==false && visible(el) && UNFOLLOW.test(controlLabel(el)));
   }
   // Association is limited to rendered forum post cards. Never infer a post from a random menu.
   postFromNode(node,c=this.context) {
@@ -370,7 +370,7 @@ class DiscordAdapter {
     if (sig !== this.signature) { this.signature = sig; this.onContext(c); }
     // Opening a post with an already-confirmed Following/Leave control can recover that visible bookmark.
     const profile=this.isEnabled();
-    if(profile && c.type==='thread' && this.controls().some(b=>!b.closest('[role="menu"]')&&UNFOLLOW.test(controlLabel(b)))) {
+    if(profile && c.type==='thread' && this.controls().some(b=>b.isConnected!==false&&!b.closest('[role="menu"]')&&UNFOLLOW.test(controlLabel(b)))) {
       const key=profile+':'+identity(c);
       if(!this.seenExisting.has(key)){this.seenExisting.add(key);this.onFollow(c);}
     }
