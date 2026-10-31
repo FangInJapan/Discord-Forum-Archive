@@ -109,3 +109,24 @@ test('500-post search/sort and out-of-order operation reconstruction',async()=>{
   const mem=new Memory(),a=new ArchiveStore(mem,'profile-school');await a.add(record());await a.patch(`${G}:${T}`,{starred:true});await a.remove(`${G}:${T}`);
   assert.equal(reduceOperations([...a.ops.values()].reverse()).size,0);
 });
+
+test('legacy bookmarks enter default folder; folder aliases and backup survive round trip',()=>{
+  const legacy=record();
+  delete legacy.collectionId;delete legacy.titleUpdatedAt;
+  const migrated=validateRecord(legacy);
+  assert.equal(migrated.collectionId,'default');
+  assert.equal(migrated.titleUpdatedAt,null);
+  const prefs=cleanPrefs({folders:[{id:'default',name:'默认资料'},{id:'my-folder-001',name:'教程'}],
+    folderSelections:{[G]:'my-folder-001'},guildAliases:{[G]:'自定义服务器'},
+    forumAliases:{[G+':'+F]:'自定义论坛'}});
+  assert.equal(prefs.folders[0].name,'默认资料');
+  assert.equal(prefs.folderSelections[G],'my-folder-001');
+  const second=record(U,{collectionId:'my-folder-001'});
+  assert.deepEqual(selectRecords([migrated,second],{guildId:G,scope:'server',collectionId:'my-folder-001'}).map(r=>r.threadId),[U]);
+  const copy=parseImport(JSON.stringify(exportData([migrated,second],{id:'test',name:'测试'},prefs)));
+  assert.equal(copy.folders[1].name,'教程');
+  assert.equal(copy.records[1].collectionId,'my-folder-001');
+  assert.equal(copy.guildAliases[G],'自定义服务器');
+  assert.equal(copy.forumAliases[G+':'+F],'自定义论坛');
+  assert.throws(()=>validateRecord({...migrated,collectionId:'invalid folder id'}));
+});

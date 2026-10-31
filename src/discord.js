@@ -1,8 +1,17 @@
 import {canonical,ID,identity,parseLink} from './core.js';
 // Only visible DOM and route information. No webpack stores, token access, or HTTP interception.
-export const FOLLOW = /^(Follow(?: Post)?|Join(?: Thread| Post)?|关注(?:帖子)?|關注(?:貼文)?|加入(?:帖子|讨论串|討論串)?|フォロー(?:する)?|参加(?:する)?)$/i;
-export const UNFOLLOW = /^(Unfollow(?: Post| Thread)?|Leave(?: Thread| Post)?|Following|Joined|取消关注(?:帖子)?|取消關注(?:貼文)?|正在关注|已关注|關注中|已關注|退出(?:帖子|讨论串|討論串)?|フォロー中|フォロー済み|フォロー解除|フォローを解除|参加中|参加済み|参加を取り消す|退出(?:する)?)$/i;
-const CREATE = /^(New Post|Create Post|新建帖子|创建帖子|發佈貼文|建立貼文|新しい投稿|投稿を作成)$/i;
+export const FOLLOW = /^(?:关注(?:帖子|讨论串|此帖)?|加入(?:帖子|讨论串)?|追踪(?:帖子)?)$/;
+export const UNFOLLOW = /^(?:取消关注(?:帖子|此帖)?|停止关注|已关注|正在关注|退出(?:帖子|讨论串)?|取消加入|已加入|已追踪)$/;
+const CREATE = /^(?:新建帖子|创建帖子|发布帖子|发表帖子|发起帖子)$/;
+export function normalizeThreadTitle(value) {
+  const source=String(value||'').replace(/\s+/g,' ').trim();
+  // Preserve a closing bracket when Discord appends the Chinese "聊天" UI label.
+  let cleaned=source.replace(/[\s|｜·]+聊天$/u,'');
+  if(cleaned===source && source.endsWith('】聊天'))cleaned=source.slice(0,-2);
+  // Long forum titles may have the UI label appended without a separator.
+  if(cleaned===source && source.length>=40 && source.endsWith('聊天'))cleaned=source.slice(0,-2);
+  return cleaned.trim() || source;
+}
 export function controlLabel(el) { return (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim(); }
 export function visible(el) { return !!el && !el.closest('[hidden],[aria-hidden="true"]') && el.getClientRects().length > 0; }
 export function routeOf(href) {
@@ -28,7 +37,7 @@ export class DiscordAdapter {
   title(root) {
     if (!root) return '';
     const heading = [...root.querySelectorAll('header h1,header h2,header h3,[role="toolbar"] h1,[role="toolbar"] h2,[role="toolbar"] h3,h1,h2')].find(visible);
-    return (heading?.textContent || '').trim();
+    return normalizeThreadTitle(heading?.textContent || '');
   }
   controls() {
     const scopes = [...this.doc.querySelectorAll('main header,main [role="toolbar"],[role="main"] header,[role="main"] [role="toolbar"],[role="dialog"] header,[role="dialog"] [role="toolbar"],[class*="threadSidebar"] header,[class*="threadSidebar"] [role="toolbar"],[role="menu"]')];
@@ -52,7 +61,7 @@ export class DiscordAdapter {
         const parsed=parseLink(link.href);
         if(parsed.guildId!==c.guildId || parsed.threadId===c.forumId)continue;
         const scope=card||link;
-        const title=this.title(scope)||link.getAttribute('aria-label')||link.textContent?.trim()||'';
+        const title=normalizeThreadTitle(this.title(scope)||link.getAttribute('aria-label')||link.textContent?.trim()||'');
         return {...parsed,forumId:c.forumId,forumName:c.forumName,guildName:c.guildName,originalTitle:title,card:scope};
       }catch{/* Non-post links are not candidates. */}
     }
@@ -71,6 +80,20 @@ export class DiscordAdapter {
     }
     return [...records.values()];
   }
+  collectVisiblePosts() {
+    const c=this.inspect(),items=new Map();
+    if(c.type==='thread'&&c.originalTitle)items.set(identity(c),c);
+    if(c.type==='forum'){
+      const root=this.forumRoot(this.main());
+      for(const link of root?.querySelectorAll('a[href*="/channels/"]')||[]){
+        if(!visible(link))continue;
+        const info=this.postFromNode(link,c);
+        if(info?.originalTitle){const {card,...record}=info;items.set(identity(record),record);}
+      }
+    }
+    return [...items.values()];
+  }
+  visiblePostInfo(key) { return this.collectVisiblePosts().find(p=>identity(p)===key)||null; }
   handleContextMenu(event) {
     if(!event.isTrusted)return;
     const target=event.target instanceof Element?event.target:event.target?.parentElement;
@@ -160,7 +183,7 @@ export class DiscordAdapter {
       const current=this.inspect();
       return current.type==='thread'&&identity(current)===identity(record);
     };
-    const positive=()=>card?this.stateIn(card):this.controls().some(b=>!b.closest('[role="menu"]')&&UNFOLLOW.test(controlLabel(b)));
+    const positive=()=>card?this.stateIn(card):this.controls().some(b=>b.isConnected!==false&&!b.closest('[role="menu"]')&&UNFOLLOW.test(controlLabel(b)));
     const check=()=>{
       if(!valid())return;
       if(positive()){

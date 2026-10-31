@@ -43,6 +43,9 @@ export class ArchiveApp {
     menu('Forum Archive 设置',()=>this.settings());
     menu('切换本地资料库 / 账号',()=>this.chooseProfile());
     menu('导入当前可见的已关注帖',()=>this.importVisibleFollowed());
+    menu('通过链接添加帖子',()=>this.addDialog());
+    menu('导出 JSON 备份',()=>this.exportNow());
+    menu('导入 JSON 备份',()=>this.dataDialog());
     menu('重置面板位置',()=>this.resetLayout());
     this.layout(); this.renderList();
     const preferred=await this.storage.get(`${PREFIX}activeProfile`,null);
@@ -116,7 +119,6 @@ export class ArchiveApp {
   async chooseProfile() {
     const profiles = await this.profiles();
     this.dialog('选择本地资料库', (body,close,submit)=> {
-      body.append(element('p',{text:'无法从网页可靠识别账号。请为每个 Discord 账号单独创建并选择资料库；切换账号后也请在此切换。每次刷新均需明确选择，不会自动混合账号数据。'}));
       if (profiles.length) {
         const select=element('select',{'aria-label':'已有资料库'},...profiles.map(p=>element('option',{value:p.id,text:p.name})));
         body.append(select,element('button',{class:'primary',text:'使用所选资料库',onclick:submit(async()=>{await this.activate(profiles.find(p=>p.id===select.value));close();})}));
@@ -162,30 +164,160 @@ export class ArchiveApp {
   }
   updateContext() {
     const c=this.context,f=this.currentFilter();
-    this.contextEl.textContent=c.guildId ? `${c.guildName || `服务器 ${c.guildId}`} · ${c.forumName || (c.type==='thread'?'待归属':c.type==='forum'?c.forumId:'未识别论坛')}` : '私信 / 非服务器页面';
-    this.profileEl.textContent=this.profile ? `资料库：${this.profile.name} · 切换账号时请切换资料库` : '尚未选择资料库 · 点击选择';
-    this.scope.value=f.scope;this.sort.value=f.sort;
+    const guildName=this.prefs.guildAliases[c.guildId]||c.guildName||(c.guildId?'服务器 '+c.guildId:'非服务器页面');
+    const forumId=c.forumId || (c.type==='forum'?c.channelId:null);
+    const forumName=this.prefs.forumAliases[c.guildId+':'+forumId]||c.forumName||(forumId?'频道 '+forumId:'当前频道');
+    this.contextEl.textContent=c.guildId ? guildName+' · '+forumName : '私信 / 非服务器页面';
+    this.profileEl.textContent=this.profile ? this.profile.name : '';
+    this.scope.value=f.scope; this.scope.textContent=f.scope==='forum'?'本频道':'全服务器';
+    this.scope.setAttribute('aria-checked',String(f.scope==='server'));
+    this.sort.value=f.sort; this.sort.title=this.sort.selectedOptions?.[0]?.textContent||'排序';
+    this.collectionButton.textContent=this.selectedFolder().name+' ▾';
     const saved=this.store && c.type==='thread' && this.store.records.has(identity(c));
     this.quick.textContent=saved?'★ 已本地收藏 · 管理':'☆ 本地收藏此帖';
-    this.pageSave.textContent=c.type==='thread'?'收藏当前帖子':'添加当前链接…';
+    this.pageSave.textContent=saved?'已收藏当前帖子':'☆ 收藏当前帖子';
+  }
+  selectedFolder() {
+    const guild=this.context.guildId;
+    const selected=this.prefs.folderSelections[guild] || 'default';
+    return this.prefs.folders.find(f=>f.id===selected) || this.prefs.folders[0];
+  }
+  async selectFolder(id) {
+    const guild=this.context.guildId;
+    if(!guild||!this.prefs.folders.some(f=>f.id===id))return;
+    await this.savePrefs({folderSelections:{...this.prefs.folderSelections,[guild]:id}});
+    this.renderList();this.updateContext();
+  }
+  folderDialog() {
+    if(!this.profile)return this.chooseProfile();
+    this.dialog('收藏夹',(body,close,submit)=>{
+      const draw=()=>{
+        body.replaceChildren();
+        for(const folder of this.prefs.folders) {
+          const id=folder.id,row=element('div',{class:'folder-row'});
+          row.append(element('button',{class:id===this.selectedFolder().id?'primary':'',text:folder.name,onclick:submit(async()=>{await this.selectFolder(id);close();})}));
+          row.append(element('button',{'aria-label':'重命名收藏夹 '+folder.name,text:'✎',onclick:()=>this.renameFolder(id)}));
+          if(id!=='default')row.append(element('button',{'aria-label':'删除收藏夹 '+folder.name,text:'×',onclick:()=>this.deleteFolder(id)}));
+          body.append(row);
+        }
+        body.append(element('button',{class:'primary',text:'+ 新建收藏夹',onclick:()=>this.renameFolder(null)}));
+      };
+      draw();
+    });
+  }
+  renameFolder(id) {
+    const current=id?this.prefs.folders.find(f=>f.id===id):null;
+    this.dialog(current?'重命名收藏夹':'新建收藏夹',(body,close,submit)=>{
+      const name=element('input',{value:current?.name||'',maxlength:'80',placeholder:'收藏夹名称','aria-label':'收藏夹名称'});
+      body.append(name,element('button',{class:'primary',text:'保存',onclick:submit(async()=>{
+        const value=name.value.trim();if(!value)throw new Error('请输入名称。');
+        const newId=current?null:uid();
+        const folders=current?this.prefs.folders.map(f=>f.id===id?{...f,name:value}:f):
+          [...this.prefs.folders,{id:newId,name:value}];
+        const updates={folders};
+        if(newId&&this.context.guildId)updates.folderSelections={...this.prefs.folderSelections,[this.context.guildId]:newId};
+        await this.savePrefs(updates);close();this.updateContext();this.renderList();
+      })}));
+    });
+  }
+  deleteFolder(id) {
+    const folder=this.prefs.folders.find(f=>f.id===id);
+    if(!folder||id==='default')return;
+    this.dialog('删除收藏夹',(body,close,submit)=>{
+      const used=[...this.store.records.values()].filter(r=>r.collectionId===id).length;
+      body.append(element('p',{text:'删除「'+folder.name+'」？其中 '+used+' 个收藏将移至默认收藏夹。'}),
+        element('button',{class:'danger',text:'确认删除',onclick:submit(async()=>{
+          // Move bookmarks first; only remove folder after every write completes.
+          for(const record of [...this.store.records.values()].filter(r=>r.collectionId===id))
+            await this.store.patch(identity(record),{collectionId:'default'});
+          const selections={...this.prefs.folderSelections};
+          for(const guild of Object.keys(selections))if(selections[guild]===id)selections[guild]='default';
+          await this.savePrefs({folders:this.prefs.folders.filter(f=>f.id!==id),folderSelections:selections});
+          close();this.updateContext();this.renderList();
+        })}));
+    });
+  }
+  editContextNames() {
+    const c=this.context;if(!c.guildId)return;
+    const fid=c.forumId||(c.type==='forum'?c.channelId:null),key=c.guildId+':'+fid;
+    this.dialog('修改显示名称',(body,close,submit)=>{
+      const guild=element('input',{value:this.prefs.guildAliases[c.guildId]||'',maxlength:'120',placeholder:c.guildName||c.guildId,'aria-label':'自定义服务器名称'});
+      const forum=element('input',{value:this.prefs.forumAliases[key]||'',maxlength:'120',placeholder:c.forumName||'当前频道','aria-label':'自定义论坛名称'});
+      body.append(element('label',{text:'服务器名称'},guild),element('label',{text:'论坛名称'},forum),
+        element('button',{class:'primary',text:'保存',onclick:submit(async()=>{
+          const ga={...this.prefs.guildAliases},fa={...this.prefs.forumAliases};
+          if(guild.value.trim())ga[c.guildId]=guild.value.trim();else delete ga[c.guildId];
+          if(fid){if(forum.value.trim())fa[key]=forum.value.trim();else delete fa[key];}
+          await this.savePrefs({guildAliases:ga,forumAliases:fa});this.updateContext();close();
+        })}));
+    });
+  }
+  sortDialog() {
+    const labels=['最近收藏','最早收藏','最近修改','最早修改','标题 A → Z','标题 Z → A','星标优先'];
+    this.dialog('排序方式',(body,close,submit)=>{
+      for(const [i,value] of SORTS.entries())body.append(element('button',{
+        text:(this.sort.value===value?'✓ ':'')+labels[i],onclick:submit(async()=>{
+          this.sort.value=value;await this.filterChange();close();
+        })}));
+    });
+  }
+  cardMenu(record) {
+    this.dialog('帖子操作',(body,close,submit)=>{
+      body.append(element('p',{class:'muted',text:record.customTitle??record.originalTitle}));
+      const actions=[
+        ['重新读取标题',()=>this.reloadOneTitle(record)],
+        ['编辑',()=>this.editDialog(record)],
+        ['复制链接',()=>this.copy(record.url)],
+        ['删除收藏',()=>this.deleteDialog(record)]
+      ];
+      for(const [label,action] of actions)body.append(element('button',{text:label,onclick:submit(async()=>{close();await action();})}));
+    });
+  }
+  async reloadOneTitle(record) {
+    const current=this.adapter.visiblePostInfo(identity(record));
+    if(!current?.originalTitle){this.toast('请先在 Discord 打开此帖子或让它显示在当前论坛页面。');return;}
+    await this.store.observe(current);
+    this.toast('已检查当前可见的帖子标题。');
+  }
+  async refreshVisibleTitles() {
+    if(!this.profile)return this.chooseProfile();
+    if(Date.now()-(this.lastTitleRefresh||0)<60000){this.toast('请稍后再刷新标题。');return;}
+    const posts=this.adapter.collectVisiblePosts();
+    let changed=0,seen=0;
+    for(const info of posts){
+      const existing=this.store.records.get(identity(info));
+      if(!existing)continue;
+      seen++;
+      if(info.originalTitle && info.originalTitle!==existing.originalTitle){
+        await this.store.observe(info);changed++;
+      }
+    }
+    this.lastTitleRefresh=Date.now();
+    this.toast('已检查 '+seen+' 个当前可见的收藏，更新 '+changed+' 个标题。未后台请求其他帖子。');
   }
   buildPanel() {
     const btn=(text,label,fn,cls='icon')=>element('button',{text,'aria-label':label,title:label,class:cls,onclick:this.safe(fn)});
     this.panel=element('section',{class:'panel','aria-label':'Forum Archive 收藏管理'});
     this.header=element('header',{class:'header'},element('strong',{text:'Forum Archive'}),
       btn('+','添加帖子链接',()=>this.addDialog()),btn('⚙','设置',()=>this.settings()),btn('−','折叠面板',()=>this.setMode('collapsed')),btn('×','隐藏面板',()=>this.setMode('hidden')));
-    this.contextEl=element('div',{class:'context'});this.profileEl=element('div',{class:'profile'});
-    this.search=element('input',{type:'search',placeholder:'搜索标题 / 论坛名称','aria-label':'搜索收藏'});
-    this.search.addEventListener('input',()=> {this.query=this.search.value;this.limit=80;this.renderList();});
-    this.scope=element('select',{'aria-label':'筛选范围'},element('option',{value:'forum',text:'本频道 / 待归属'}),element('option',{value:'server',text:'整个服务器'}));
-    const names=['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A → Z','标题 Z → A','星标优先'];
-    this.sort=element('select',{'aria-label':'排序'},...SORTS.map((v,i)=>element('option',{value:v,text:names[i]})));
-    this.scope.addEventListener('change',this.safe(()=>this.filterChange()));this.sort.addEventListener('change',this.safe(()=>this.filterChange()));
-    this.pageSave=btn('收藏当前帖子','收藏当前页面或添加链接',()=>this.saveCurrent(),'grow');
+    this.contextEl=element('button',{class:'context',title:'点击编辑服务器和论坛的显示名称',onclick:this.safe(()=>this.editContextNames())});
+    this.profileEl=element('div',{class:'profile'});
+    this.search=element('input',{type:'search',placeholder:'搜索帖子标题','aria-label':'搜索收藏'});
+    this.search.addEventListener('input',()=>{this.query=this.search.value;this.limit=80;this.renderList();});
+    this.scope=element('button',{class:'scope-toggle',role:'switch','aria-label':'切换本频道或全服务器',onclick:this.safe(async()=>{
+      this.scope.value=this.scope.value==='forum'?'server':'forum';await this.filterChange();
+    })});
+    this.scope.value='forum';
+    this.collectionButton=element('button',{class:'collection-select',title:'选择或管理收藏夹',onclick:this.safe(()=>this.folderDialog())});
+    this.sort=element('select',{'aria-label':'排序方式'},...SORTS.map((v,i)=>element('option',{value:v,text:['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A→Z','标题 Z→A','星标优先'][i]})));
+    this.sort.addEventListener('change',this.safe(()=>this.filterChange()));
+    const sortSlot=element('div',{class:'sort-slot',title:'选择排序方式'},element('span',{text:'⇅'}),this.sort);
+    this.pageSave=btn('☆ 收藏当前帖子','一键收藏当前帖子',()=>this.saveCurrent(),'page-save');
     this.list=element('div',{class:'list',role:'region','aria-label':'收藏列表',tabindex:'0'});
     this.count=element('span',{role:'status'});
-    this.panel.append(this.header,this.contextEl,element('div',{class:'tools'},this.profileEl,this.search,element('div',{class:'row'},this.scope,this.sort),this.pageSave),this.list,
-      element('footer',{class:'footer'},this.count,btn('备份 / 恢复','数据导入导出',()=>this.dataDialog(),'')));
+    this.panel.append(this.header,this.contextEl,
+      element('div',{class:'tools'},this.search,element('div',{class:'filters'},this.scope,this.collectionButton,sortSlot),this.pageSave),
+      this.list,element('footer',{class:'footer'},this.count,btn('⟳ 更新可见标题','刷新当前页面可见收藏的标题',()=>this.refreshVisibleTitles(),'refresh-titles')));
     this.tab=btn('关注帖','展开收藏面板',()=>this.setMode('expanded',true),'tab');
     this.tab.addEventListener('mouseenter',()=> {if(this.prefs.hover)this.safe(()=>this.setMode('expanded',true))();});
     this.quick=btn('☆ 本地收藏此帖','独立帖子收藏入口',()=>this.saveCurrent(),'quick');
@@ -260,21 +392,23 @@ export class ArchiveApp {
     if(!this.list)return;const oldScroll=this.list.scrollTop;
     const active=this.root.activeElement, focusKey=active?.getAttribute('data-focus');
     const frag=document.createDocumentFragment();let records=[];
-    if(this.store && this.context.guildId)records=selectRecords(this.store.records.values(),{...this.context,...this.currentFilter(),query:this.query});
+    if(this.store && this.context.guildId)records=selectRecords(this.store.records.values(),{...this.context,...this.currentFilter(),collectionId:this.selectedFolder().id,query:this.query});
     this.count.textContent=`${records.length} 条 · 资料库共 ${this.store?.records.size || 0} 条`;
     if(!records.length)frag.append(element('div',{class:'empty',text:!this.profile?'选择资料库后即可开始收藏。':!this.context.guildId?'请进入服务器查看收藏。':this.query?'没有匹配的收藏。':this.context.forumId?'此筛选下还没有收藏。':'此页未确定父论坛；显示本服务器待归属收藏。可切换“整个服务器”。'}));
-    const date=v=>new Date(v).toLocaleString();
-    const source={'manual-page':'页面收藏','manual-link':'链接添加','native-follow':'原生关注 · 实验性',import:'导入'};
+    const shortDate=v=>{
+      if(v==null)return '—';
+      const days=Math.max(0,Math.floor((Date.now()-v)/86400000));
+      if(days===0)return '0天';
+      if(days<100)return days+'天';
+      const d=new Date(v);return (d.getMonth()+1)+'/'+d.getDate();
+    };
     for(const r of records.slice(0,this.limit)) {
       const key=identity(r),title=r.customTitle??r.originalTitle;
-      const link=element('a',{class:`card-title${this.expanded.has(key)||!this.prefs.lines?' full':''}`,href:r.url,title,'data-focus':`${key}:open`,text:title});
-      const small=(text,label,action)=>element('button',{text,title:label,'aria-label':label,'data-focus':`${key}:${label}`,onclick:this.safe(action)});
-      const star=small(r.starred?'★':'☆','切换星标',()=>this.store.patch(key,{starred:!this.store.records.get(key)?.starred}));star.className='star';star.setAttribute('aria-pressed',String(r.starred));
-      const actions=element('div',{class:'actions'},star,
-        small(this.expanded.has(key)?'收起标题':'全文','展开或收起完整标题',()=>{this.expanded.has(key)?this.expanded.delete(key):this.expanded.add(key);this.renderList();}),
-        small('复制','复制帖子永久链接',()=>this.copy(r.url)),small('编辑','编辑标题和归属',()=>this.editDialog(r)),small('删除','仅删除本地收藏',()=>this.deleteDialog(r)));
-      frag.append(element('article',{class:'card'},link,element('div',{class:'meta',text:`${r.forumName || (r.forumId?`论坛 ${r.forumId}`:'待归属')} · ${source[r.source]}`}),
-        element('div',{class:'meta',text:`收藏 ${date(r.savedAt)} · 修改 ${date(r.modifiedAt)}`}),actions));
+      const link=element('a',{class:'card-title'+(this.expanded.has(key)||!this.prefs.lines?' full':''),href:r.url,title,'data-focus':key+':open',text:title});
+      const star=element('button',{class:'star',text:r.starred?'★':'☆','aria-label':'切换星标','aria-pressed':String(r.starred),onclick:this.safe(()=>this.store.patch(key,{starred:!this.store.records.get(key)?.starred}))});
+      const when=element('span',{class:'post-age',title:r.titleUpdatedAt?'上次确认标题变化：'+new Date(r.titleUpdatedAt).toLocaleString():'尚未读取到标题变化时间',text:shortDate(r.titleUpdatedAt)});
+      const more=element('button',{class:'more',text:'⋯','aria-label':'帖子更多操作',onclick:this.safe(()=>this.cardMenu(r))});
+      frag.append(element('article',{class:'card compact-card'},star,when,link,more));
     }
     if(records.length>this.limit)frag.append(element('button',{class:'pager',text:`继续显示（剩余 ${records.length-this.limit} 条）`,onclick:()=>{this.limit+=80;this.renderList();}}));
     this.list.replaceChildren(frag);this.list.scrollTop=oldScroll;
@@ -287,51 +421,60 @@ export class ArchiveApp {
   }
   async saveCurrent() {
     if(!this.profile)return this.chooseProfile();
-    const c=this.adapter.inspect();
-    if(c.type!=='thread')return this.addDialog(this.href());
-    if(this.store.records.has(identity(c)))return this.editDialog(this.store.records.get(identity(c)));
-    await this.store.add(makeRecord(c,'manual-page'));this.toast('已保存到本地资料库；退出原生关注也会保留。');this.renderList();
+    let c=this.adapter.inspect();
+    if(c.type==='forum'){this.toast('这是论坛频道，请先打开一个帖子。');return;}
+    if(c.type!=='thread'){
+      // An explicit one-click save is treated as user confirmation for an otherwise
+      // unrecognized /channels/guild/thread URL; unknown parents remain unassigned.
+      let parsed;try{parsed=parseLink(this.href());}
+      catch{this.toast('当前不是可以收藏的帖子链接。');return;}
+      const title=this.adapter.title(this.adapter.main());
+      c={...parsed,type:'thread',forumId:null,forumName:'',originalTitle:title||('帖子 '+parsed.threadId),guildName:''};
+    }
+    if(this.store.records.has(identity(c))){this.toast('当前帖子已经收藏。');return;}
+    const folder=this.selectedFolder().id;
+    await this.store.add(makeRecord({...c,collectionId:folder},'manual-page'));
+    this.toast('已加入「'+this.selectedFolder().name+'」。');
+    this.renderList();
   }
   async importVisibleFollowed() {
     if(!this.profile)return this.chooseProfile();
     const candidates=this.adapter.collectVisibleFollowed();
-    if(!candidates.length){this.toast('当前可见论坛卡片中没有能够明确确认已关注的帖子；无法读取未渲染或已失去关注状态的历史帖子。');return;}
+    if(!candidates.length){this.toast('当前可见论坛卡片里没有明确显示已关注的帖子。');return;}
     let added=0;
     for(const candidate of candidates){
       const key=identity(candidate);
       if(!this.store.records.has(key)){
-        const result=await this.store.add(makeRecord(candidate,'native-follow'),{automatic:true});
+        const result=await this.store.add(makeRecord({...candidate,collectionId:this.selectedFolder().id},'native-follow'),{automatic:true});
         if(result)added++;
       }
     }
-    this.toast(`已从可见且有明确已关注标记的帖子中新增 ${added} 条，本次发现 ${candidates.length} 条。`);
+    this.toast('新增 '+added+' 条可见关注帖。');
   }
   async capture(c) {
     if(!this.profile||!this.prefs.autoFollow)return;
     if(this.store.records.has(identity(c)))await this.store.observe(c,true);
     else {
-      const saved=await this.store.add(makeRecord(c,'native-follow'),{automatic:true});
+      const saved=await this.store.add(makeRecord({...c,collectionId:this.selectedFolder().id},'native-follow'),{automatic:true});
       if(!saved){this.toast('此帖曾被明确删除，自动捕获不会恢复它；需要时请手动重新收藏。');return;}
     }
     this.toast('已观察到关注按钮变为退出状态，并保存本地收藏（实验性）。');
   }
   addDialog(initial='') {
     if(!this.profile)return this.chooseProfile();
-    this.dialog('添加帖子链接',(body,close,submit)=> {
-      const url=element('input',{value:initial,placeholder:'https://discord.com/channels/服务器ID/帖子ID','aria-label':'Discord 帖子链接'});
-      const title=element('input',{maxlength:'20000',placeholder:'可留空，稍后修改','aria-label':'帖子标题'});
-      const forum=element('input',{placeholder:'父论坛频道 ID，可留空','aria-label':'父论坛频道 ID'});
-      const forumName=element('input',{maxlength:'500',placeholder:'父论坛名称，可留空','aria-label':'父论坛名称'});
-      // Link ID validation remains mandatory; no redundant confirmation checkbox.
-      body.append(element('label',{text:'帖子永久链接'},url),element('label',{text:'标题'},title),element('label',{text:'父论坛 ID'},forum),element('label',{text:'父论坛名称'},forumName),
-        element('p',{class:'muted',text:'请输入论坛帖子链接。无法从链接确定帖子类型或父论坛时，将记录标为待归属；请在收藏后核对。'}),
-        element('button',{class:'primary',text:'保存收藏',onclick:submit(async()=>{
-                    const parsed=parseLink(url.value),fid=forum.value.trim()||null;
-          if(fid && (!ID.test(fid)||fid===parsed.threadId))throw new Error('父论坛 ID 必须是不同于帖子 ID 的 Snowflake 字符串。');
-          const known=this.store.records.get(identity(parsed));
-          if(known){close();this.toast('已收藏该帖子，没有创建重复记录。');return;}
-          await this.store.add(makeRecord({...parsed,forumId:fid,forumName:fid?forumName.value.trim():'',originalTitle:title.value.trim()},'manual-link'));
-          close();this.toast('已保存本地收藏。');
+    this.dialog('通过链接添加',(body,close,submit)=>{
+      const url=element('input',{value:initial,placeholder:'粘贴 Discord 论坛帖子链接','aria-label':'帖子链接'});
+      const title=element('input',{maxlength:'20000',placeholder:'标题（可留空）','aria-label':'帖子标题'});
+      body.append(element('label',{text:'帖子链接'},url),element('label',{text:'标题（可选）'},title),
+        element('button',{class:'primary',text:'加入「'+this.selectedFolder().name+'」',onclick:submit(async()=>{
+          const parsed=parseLink(url.value),known=this.store.records.get(identity(parsed));
+          if(known){close();this.toast('这条帖子已经收藏。');return;}
+          const c=this.adapter.inspect(),matched=this.adapter.links?.get(identity(parsed));
+          const info={...parsed,forumId:matched?.forumId||null,forumName:matched?.forumName||'',
+            guildName:c.guildId===parsed.guildId?c.guildName||'':'',
+            originalTitle:title.value.trim()||'',collectionId:this.selectedFolder().id};
+          await this.store.add(makeRecord(info,'manual-link'));
+          close();this.toast('收藏成功。');
         })}));
     });
   }
@@ -340,13 +483,14 @@ export class ArchiveApp {
     this.dialog('编辑收藏',(body,close,submit)=> {
       const title=element('input',{value:record.customTitle??record.originalTitle,maxlength:'20000','aria-label':'自定义标题'});
       const restore=element('input',{type:'checkbox'}),forum=element('input',{value:record.forumId||'','aria-label':'父论坛频道 ID'}),name=element('input',{value:record.forumName,maxlength:'500','aria-label':'父论坛名称'});
-      body.append(element('label',{text:'本地自定义标题'},title),element('p',{class:'notice',text:`原始标题：${record.originalTitle}`}),element('label',{class:'check'},restore,element('span',{text:'恢复原始标题（清除本地自定义名称）'})),
+      const folder=element('select',{'aria-label':'收藏夹'},...this.prefs.folders.map(f=>element('option',{value:f.id,text:f.name})));folder.value=record.collectionId||'default';
+      body.append(element('label',{text:'本地自定义标题'},title),element('label',{text:'收藏夹'},folder),element('p',{class:'notice',text:`原始标题：${record.originalTitle}`}),element('label',{class:'check'},restore,element('span',{text:'恢复原始标题（清除本地自定义名称）'})),
         element('label',{text:'父论坛 ID（留空则待归属）'},forum),element('label',{text:'父论坛名称'},name),element('p',{class:'muted',text:'归属仅由你确认；不会修改 Discord 原帖。'}),
         element('button',{class:'primary',text:'保存修改',onclick:submit(async()=>{
           const fid=forum.value.trim()||null;if(fid&&(!ID.test(fid)||fid===record.threadId))throw new Error('父论坛 ID 不合法。');
           if(!restore.checked&&!title.value.trim())throw new Error('标题不能为空。');
           await store.refresh();if(!store.records.has(identity(record)))throw new Error('该收藏已在其他标签页删除。请重新添加。');
-          await store.patch(identity(record),{customTitle:restore.checked?null:title.value,forumId:fid,forumName:fid?name.value.trim():''});close();this.toast('已保存本地修改。');
+          await store.patch(identity(record),{customTitle:restore.checked?null:title.value,forumId:fid,forumName:fid?name.value.trim():'',collectionId:folder.value});close();this.toast('已保存本地修改。');
         })}));
     });
   }
@@ -354,6 +498,15 @@ export class ArchiveApp {
     const store=this.store;
     this.dialog('删除本地收藏',(body,close,submit)=>body.append(element('p',{text:record.customTitle??record.originalTitle}),element('p',{text:'仅从当前资料库删除，不会退出 Discord 关注，也不会删除原帖。此操作会同步到其他标签页。'}),
       element('div',{class:'row end'},element('button',{text:'取消',onclick:close}),element('button',{class:'danger',text:'确认删除',onclick:submit(async()=>{await store.remove(identity(record));close();this.toast('已删除本地收藏。');})}))));
+  }
+  async exportNow() {
+    if(!this.profile)return this.chooseProfile();
+    await this.store.refresh();
+    const blob=new Blob([JSON.stringify(exportData(this.store.records.values(),this.profile,this.prefs),null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=element('a',{href:url,download:'Forum-Archive-'+new Date().toISOString().slice(0,10)+'.json'});
+    this.root.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    this.toast('已创建 JSON 备份。');
   }
   dataDialog() {
     if(!this.profile)return this.chooseProfile();const store=this.store,profile=this.profile;
@@ -363,7 +516,16 @@ export class ArchiveApp {
       const policy=element('select',{'aria-label':'导入冲突处理'},element('option',{value:'preserve',text:'保留本地已有记录（默认）'}),element('option',{value:'incoming',text:'使用备份的标题、星标和归属覆盖同名记录'}));
       const importBtn=element('button',{class:'primary',text:'确认合并导入',disabled:true,onclick:submit(async()=>{
         if(!imported)throw new Error('请先选择有效备份文件。');
-        try {const result=await mergeImport(store,imported.records,policy.value);status.textContent=`导入完成：新增 ${result.added} 条，更新 ${result.updated} 条。`;importBtn.disabled=true;imported=null;}
+        try {
+          const folders=[...this.prefs.folders];
+          for(const f of imported.folders||[]) {
+            if(f.id==='default'&&folders[0]?.name==='默认收藏夹')folders[0]={...f};
+            else if(!folders.some(x=>x.id===f.id))folders.push(f);
+          }
+          await this.savePrefs({folders,
+            guildAliases:{...imported.guildAliases,...this.prefs.guildAliases},
+            forumAliases:{...imported.forumAliases,...this.prefs.forumAliases}});
+          const result=await mergeImport(store,imported.records,policy.value);status.textContent=`导入完成：新增 ${result.added} 条，更新 ${result.updated} 条。`;importBtn.disabled=true;imported=null;}
         catch(e){throw new Error(`导入中断，已完成的记录已保留。可安全重试。${e.message}`);}
       })});
       file.addEventListener('change',this.safe(async()=>{
@@ -373,7 +535,7 @@ export class ArchiveApp {
       }));
       body.append(element('p',{text:`资料库：${profile.name} · ${store.records.size} 条收藏。备份仅包含本地收藏与分类，不包含账号凭据。`}),
         element('button',{text:'导出 JSON 备份',onclick:submit(async()=>{
-          await store.refresh();const blob=new Blob([JSON.stringify(exportData(store.records.values(),profile),null,2)],{type:'application/json'});
+          await store.refresh();const blob=new Blob([JSON.stringify(exportData(store.records.values(),profile,this.prefs),null,2)],{type:'application/json'});
           const url=URL.createObjectURL(blob),a=element('a',{href:url,download:`Forum-Archive-${new Date().toISOString().slice(0,10)}.json`});this.root.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);status.textContent='已生成备份，请确认浏览器下载完成。';
         })}),element('h3',{text:'合并导入'}),file,policy,status,importBtn,
         element('p',{class:'muted',text:'导入逐条写入，存储失败时可能部分完成，重试会去重。覆盖模式会明确替换已有名称、星标和归属；收藏时间保持本地值。备份不包含界面偏好。'}));
@@ -385,22 +547,33 @@ export class ArchiveApp {
       const controls={};
       const select=(key,label,options)=> {const el=element('select',{'aria-label':label},...options.map(([value,text])=>element('option',{value,text})));el.value=String(p[key]);controls[key]=el;return element('label',{text:label},el);};
       const number=(key,label,min,max)=> {const el=element('input',{type:'number',min,max,step:1,value:p[key],'aria-label':label});controls[key]=el;return element('label',{text:label},el);};
+      const sizeSlider=(key,label,min,max)=>{
+        const current=Math.round(100*(p[key]-min)/Math.max(1,max-min));
+        const el=element('input',{type:'range',min:0,max:100,step:1,value:Math.max(0,Math.min(100,current)),'aria-label':label});
+        controls[key]=el;
+        const output=element('output',{text:el.value+'%'});
+        el.addEventListener('input',()=>output.textContent=el.value+'%');
+        return element('label',{class:'slider-setting'},
+          element('span',{},element('span',{text:label}),output),el);
+      };
+      const maxWidth=Math.max(300,Math.min(760,innerWidth-16)),maxHeight=Math.max(240,Math.min(2000,Math.floor(innerHeight*.9)));
       const check=(key,label)=> {const el=element('input',{type:'checkbox',checked:p[key]});controls[key]=el;return element('label',{class:'check'},el,element('span',{text:label}));};
       body.append(element('h3',{text:'外观'}),select('theme','主题',[['discord','跟随 Discord'],['dark','强制深色'],['light','强制浅色']]),
         element('div',{class:'row'},number('titleSize','标题字号（12–22 px）',12,22),number('uiSize','界面字号（11–18 px）',11,18)),
         select('lines','标题显示行数',[[1,'单行'],[2,'2 行'],[3,'3 行'],[4,'4 行'],[0,'完整显示']]),select('density','列表密度',[['compact','紧凑'],['standard','标准'],['relaxed','宽松']]),
-        element('h3',{text:'布局'}),element('div',{class:'row'},number('width','宽度（300–760 px）',300,760),number('height','高度（按视口限制）',240,2000)),
+        element('h3',{text:'布局'}),sizeSlider('width','面板宽度',300,maxWidth),sizeSlider('height','面板高度',240,maxHeight),
         select('dock','停靠位置',[['none','自由位置'],['left','左侧'],['right','右侧'],['top','顶部'],['bottom','底部']]),check('snap','拖动到距离边缘 24 px 内时吸附'),check('hover','悬停停靠标签时展开（默认关闭）'),check('autoOpen','进入已识别论坛时显示面板（保留手动折叠/隐藏）'),
-        element('button',{text:'重置位置与尺寸',onclick:submit(async()=>{await this.resetLayout();controls.width.value=this.prefs.width;controls.height.value=this.prefs.height;controls.dock.value=this.prefs.dock;})}),
+        element('button',{text:'重置位置与尺寸',onclick:submit(async()=>{await this.resetLayout();controls.width.value=Math.round(100*(this.prefs.width-300)/Math.max(1,maxWidth-300));controls.height.value=Math.round(100*(this.prefs.height-240)/Math.max(1,maxHeight-240));controls.dock.value=this.prefs.dock;})}),
         element('h3',{text:'收藏与识别'}),select('defaultScope','新服务器默认筛选',[['forum','本频道'],['server','整个服务器']]),select('defaultSort','新服务器默认排序',SORTS.map((s,i)=>[s,['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A → Z','标题 Z → A','星标优先'][i]])),
         check('autoFollow','实验性：原生关注成功后记录本地收藏'),check('debug','控制台输出无标题、ID、链接的调试事件'),
-        element('p',{class:'notice',text:'自动关注识别为部分支持，默认关闭。仅观察当前帖子中由你点击的关注按钮稳定变为退出状态；不保证服务器已最终确认。右键菜单、控件替换、无可见确认信号时请手动收藏。中/日/英标签规则仅经模拟测试，未在真实账号中验证。'}),
-        element('h3',{text:'数据与关于'}),element('button',{text:'备份 / 恢复 JSON',onclick:this.safe(()=>this.dataDialog())}),element('p',{class:'muted',text:'资料库切换：请使用 Tampermonkey 扩展菜单中的“切换本地资料库 / 账号”。'}),
-        element('p',{class:'muted',text:`Discord Forum Archive ${VERSION} · 本地数据格式 ${SCHEMA}。不读取 Token/Cookie，不调用 Discord API，不上传收藏。资料库需手动选择。逐变更日志合并，保留完整标题和删除记录；同一字段并发修改按逻辑时钟确定顺序，无法提供严格事务。日志随编辑次数增长，请定期导出备份。`} ),
-        element('p',{class:'muted',text:'页面识别依赖可见 DOM，Discord 更新可能影响兼容性。主题读取可用 CSS 变量；复杂主题近似为纯色。网页注入有兼容和服务规则风险，本项目不代表 Discord 官方许可。'}),
+        element('h3',{text:'关于'}),element('p',{class:'muted',text:'版本 '+VERSION+' · 使用当前页面可见信息识别帖子，原生关注同步为实验性功能。'}),
         element('button',{class:'primary',text:'保存设置',onclick:submit(async()=>{
           const patch={};for(const [key,el] of Object.entries(controls)) {
             if(el.type==='checkbox')patch[key]=el.checked;
+            else if((key==='width'||key==='height')&&el.type==='range'){
+              const low=key==='width'?300:240,high=key==='width'?maxWidth:maxHeight;
+              patch[key]=Math.round(low+(high-low)*Number(el.value)/100);
+            }
             else if(el.type==='number'||key==='lines'){if(!el.checkValidity())throw new Error(`请检查“${el.getAttribute('aria-label')}”的范围。`);patch[key]=Number(el.value);}
             else patch[key]=el.value;
           }
