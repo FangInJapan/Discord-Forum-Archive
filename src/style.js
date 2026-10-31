@@ -44,4 +44,12 @@ input[type=range]{accent-color:var(--accent)}
 .slider-setting>span{display:flex;justify-content:space-between;color:var(--muted)}
 .slider-setting output{font-variant-numeric:tabular-nums;color:var(--fg)}
 
+
+.scope-toggle{position:relative;padding-left:30px;justify-content:flex-start}
+.scope-toggle::before{position:absolute;left:5px;top:8px;width:22px;height:13px;border-radius:20px;background:#777c89;margin:0;transition:background .16s}
+.scope-toggle::after{content:'';position:absolute;left:7px;top:10px;width:9px;height:9px;border-radius:50%;background:white;transition:transform .16s}
+.scope-toggle[aria-checked=true]{background:var(--card);color:var(--fg)}
+.scope-toggle[aria-checked=true]::before{background:#50b779}
+.scope-toggle[aria-checked=true]::after{transform:translateX(9px)}
+
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}`;
