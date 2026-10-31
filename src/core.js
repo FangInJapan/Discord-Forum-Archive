@@ -1,5 +1,5 @@
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 export const SCHEMA = 1;
 export const PREFIX = 'dfa:v1:';
 export const ID = /^[0-9]{16,22}$/;
@@ -7,7 +7,7 @@ export const SOURCES = ['manual-page', 'manual-link', 'native-follow', 'import']
 export const SORTS = ['saved-desc', 'saved-asc', 'modified-desc', 'modified-asc', 'title-asc', 'title-desc', 'starred'];
 export const DEFAULTS = Object.freeze({
   theme: 'discord', titleSize: 15, uiSize: 13, lines: 4, density: 'standard',
-  snap: true, hover: false, autoFollow: false, debug: false, autoOpen: true,
+  snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
   width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {}
 });
