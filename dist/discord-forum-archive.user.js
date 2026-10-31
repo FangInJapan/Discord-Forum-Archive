@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Forum Archive
 // @namespace    https://github.com/FangInJapan/Discord-Forum-Archive
-// @version      1.1.0
+// @version      1.1.1
 // @description  独立保存 Discord 论坛帖子收藏；支持分类、长标题、备份和可调面板。
 // @author       FangInJapan
 // @match        https://discord.com/channels/*
@@ -26,7 +26,7 @@
 
 // ---- core.js ----
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const SCHEMA = 1;
 const PREFIX = 'dfa:v1:';
 const ID = /^[0-9]{16,22}$/;
@@ -578,6 +578,49 @@ function element(tag, attrs = {}, ...children) {
   }
   e.append(...children.filter(c=>c !== null && c !== undefined)); return e;
 }
+// Discord listens for keyboard shortcuts above the userscript's Shadow DOM.
+// Consume bubbling UI events at the ShadowRoot boundary after native controls
+// have received them, without cancelling their default typing/IME behaviour.
+function isolatePanelEvents(root, host = root.host) {
+  const types = [
+    'keydown','keypress','keyup','beforeinput','input',
+    'compositionstart','compositionupdate','compositionend',
+    'paste','cut','copy','focusin','focusout',
+    'pointerdown','pointerup','mousedown','mouseup','click','dblclick','contextmenu'
+  ];
+  const stop = event => event.stopPropagation();
+  // Outside a Shadow DOM, Discord sees the shadow host as the keyboard target,
+  // not the real input. Temporarily exposing the host as editable also prevents
+  // capture-phase shortcuts that use target.isContentEditable as a guard.
+  const editSelector = 'input:not([type="checkbox"]):not([type="range"]):not([type="radio"]):not([type="button"]):not([type="submit"]),textarea,[contenteditable="true"]';
+  const priorEditable=host?.getAttribute?.('contenteditable');
+  const priorTabindex=host?.getAttribute?.('tabindex');
+  const mark = target => {
+    if(!host?.setAttribute)return;
+    if(target?.matches?.(editSelector)){
+      host.setAttribute('contenteditable','true');
+      host.setAttribute('tabindex','-1');
+    }else {
+      host.removeAttribute('contenteditable');
+      if(priorTabindex===null)host.removeAttribute('tabindex');
+      else host.setAttribute('tabindex',priorTabindex);
+    }
+  };
+  const entering = event => mark(event.target);
+  const leaving = () => queueMicrotask(()=>mark(root.activeElement));
+  for (const type of types) root.addEventListener(type,stop);
+  root.addEventListener('focusin',entering);
+  root.addEventListener('focusout',leaving);
+  return () => {
+    for(const type of types)root.removeEventListener(type,stop);
+    root.removeEventListener('focusin',entering);
+    root.removeEventListener('focusout',leaving);
+    if(host?.setAttribute){
+      if(priorEditable===null)host.removeAttribute('contenteditable');else host.setAttribute('contenteditable',priorEditable);
+      if(priorTabindex===null)host.removeAttribute('tabindex');else host.setAttribute('tabindex',priorTabindex);
+    }
+  };
+}
 class ArchiveApp {
   constructor(storage, href = ()=>location.href) {
     this.storage = storage; this.prefs = cleanPrefs(); this.context = {type:'unknown'}; this.profile = null; this.store = null;
@@ -589,7 +632,8 @@ class ArchiveApp {
   async start() {
     if (document.getElementById('dfa-root')) return;
     this.host = element('div',{id:'dfa-root'}); this.host.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:2147483000;';
-    this.root = this.host.attachShadow({mode:'open'}); const style = element('style',{text:STYLE+' .panel,.tab,.overlay,.toast,.quick{pointer-events:auto}'});
+    this.root = this.host.attachShadow({mode:'open'}); this.cleanups.push(isolatePanelEvents(this.root));
+    const style = element('style',{text:STYLE+' .panel,.tab,.overlay,.toast,.quick{pointer-events:auto}'});
     this.root.append(style); document.body.append(this.host);
     this.buildPanel(); this.applyTheme();
     this.adapter = new DiscordAdapter(document,c=>this.safe(()=>this.navigate(c))(),c=>this.safe(()=>this.capture(c))(),()=>this.profile && this.prefs.autoFollow ? this.profile.id : null,this.log,this.href);
