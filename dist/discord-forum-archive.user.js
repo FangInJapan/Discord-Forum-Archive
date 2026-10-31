@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Forum Archive
 // @namespace    https://github.com/FangInJapan/Discord-Forum-Archive
-// @version      1.0.0
+// @version      1.0.1
 // @description  独立保存 Discord 论坛帖子收藏；支持分类、长标题、备份和可调面板。
 // @author       FangInJapan
 // @match        https://discord.com/channels/*
@@ -26,7 +26,7 @@
 
 // ---- core.js ----
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const SCHEMA = 1;
 const PREFIX = 'dfa:v1:';
 const ID = /^[0-9]{16,22}$/;
@@ -34,7 +34,7 @@ const SOURCES = ['manual-page', 'manual-link', 'native-follow', 'import'];
 const SORTS = ['saved-desc', 'saved-asc', 'modified-desc', 'modified-asc', 'title-asc', 'title-desc', 'starred'];
 const DEFAULTS = Object.freeze({
   theme: 'discord', titleSize: 15, uiSize: 13, lines: 4, density: 'standard',
-  snap: true, hover: false, autoFollow: false, debug: false, autoOpen: true,
+  snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
   width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {}
 });
@@ -252,9 +252,9 @@ function geometry(p, viewport, collapsed = false) {
 // ---- discord.js ----
 // Only visible DOM and route information. No webpack stores, token access, or HTTP interception.
 const FOLLOW = /^(Follow(?: Post)?|Join(?: Thread| Post)?|关注(?:帖子)?|關注(?:貼文)?|加入(?:帖子|讨论串|討論串)?|フォロー(?:する)?|参加(?:する)?)$/i;
-const UNFOLLOW = /^(Unfollow(?: Post)?|Leave(?: Thread| Post)?|取消关注(?:帖子)?|取消關注(?:貼文)?|退出(?:帖子|讨论串|討論串)?|フォロー解除|フォローを解除|参加を取り消す|退出(?:する)?)$/i;
+const UNFOLLOW = /^(Unfollow(?: Post| Thread)?|Leave(?: Thread| Post)?|Following|Joined|取消关注(?:帖子)?|取消關注(?:貼文)?|正在关注|已关注|關注中|已關注|退出(?:帖子|讨论串|討論串)?|フォロー中|フォロー済み|フォロー解除|フォローを解除|参加中|参加済み|参加を取り消す|退出(?:する)?)$/i;
 const CREATE = /^(New Post|Create Post|新建帖子|创建帖子|發佈貼文|建立貼文|新しい投稿|投稿を作成)$/i;
-function controlLabel(el) { return (el.getAttribute('aria-label') || el.textContent || '').trim(); }
+function controlLabel(el) { return (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim(); }
 function visible(el) { return !!el && !el.closest('[hidden],[aria-hidden="true"]') && el.getClientRects().length > 0; }
 function routeOf(href) {
   try {
@@ -268,7 +268,8 @@ class DiscordAdapter {
     this.doc = doc; this.onContext = onContext; this.onFollow = onFollow; this.isEnabled = isEnabled; this.log = log;
     this.context = {type:'unknown'}; this.links = new Map(); this.catalog = new Map(); this.knownThreads = new Map();
     this.href=href;this.pending = null; this.lastHref = ''; this.signature = ''; this.timer = null; this.followSerial = 0;
-    this.click = this.handleClick.bind(this); this.scheduled = () => this.schedule();
+    this.menuTarget = null; this.seenExisting = new Set();
+    this.click = this.handleClick.bind(this); this.contextMenu = this.handleContextMenu.bind(this); this.scheduled = () => this.schedule();
   }
   main() { return this.doc.querySelector('main,[role="main"]'); }
   forumRoot(main) {
@@ -281,9 +282,51 @@ class DiscordAdapter {
     return (heading?.textContent || '').trim();
   }
   controls() {
-    const scopes = [...this.doc.querySelectorAll('main header,main [role="toolbar"],[role="main"] header,[role="main"] [role="toolbar"],[role="dialog"] header,[role="dialog"] [role="toolbar"],[class*="threadSidebar"] header,[class*="threadSidebar"] [role="toolbar"]')];
+    const scopes = [...this.doc.querySelectorAll('main header,main [role="toolbar"],[role="main"] header,[role="main"] [role="toolbar"],[role="dialog"] header,[role="dialog"] [role="toolbar"],[class*="threadSidebar"] header,[class*="threadSidebar"] [role="toolbar"],[role="menu"]')];
     return [...new Set(scopes.flatMap(r=>[...r.querySelectorAll('button,[role="button"],[role="menuitem"]')]))]
-      .filter(b=>visible(b) && !b.closest('article,[role="listitem"],[data-list-id="chat-messages"],[id^="chat-messages"]'));
+      .filter(b=>b.isConnected!==false && visible(b) && !b.closest('article,[role="listitem"],[data-list-id="chat-messages"],[id^="chat-messages"]'));
+  }
+  // A positive joined/following control, not a generic Follow action, is required.
+  stateIn(scope) {
+    return !!scope && scope.isConnected!==false && [...scope.querySelectorAll('button,[role="button"],[role="menuitem"],[aria-label],[title]')]
+      .some(el=>el.isConnected!==false && visible(el) && UNFOLLOW.test(controlLabel(el)));
+  }
+  // Association is limited to rendered forum post cards. Never infer a post from a random menu.
+  postFromNode(node,c=this.context) {
+    if(!node?.closest || c.type!=='forum')return null;
+    const root=this.forumRoot(this.main());
+    if(!root || !root.contains(node))return null;
+    const card=node.closest('article,[role="article"],[role="listitem"],[data-list-item-id],[class*="forumPost"],[class*="postCard"]');
+    const anchor=node.closest('a[href]'), links=[anchor,...(card?[...card.querySelectorAll('a[href]')]:[])].filter(Boolean);
+    for(const link of links) {
+      try {
+        const parsed=parseLink(link.href);
+        if(parsed.guildId!==c.guildId || parsed.threadId===c.forumId)continue;
+        const scope=card||link;
+        const title=this.title(scope)||link.getAttribute('aria-label')||link.textContent?.trim()||'';
+        return {...parsed,forumId:c.forumId,forumName:c.forumName,guildName:c.guildName,originalTitle:title,card:scope};
+      }catch{/* Non-post links are not candidates. */}
+    }
+    return null;
+  }
+  collectVisibleFollowed() {
+    const c=this.inspect(),root=c.type==='forum'?this.forumRoot(this.main()):null,records=new Map();
+    if(!root)return [];
+    for(const link of root.querySelectorAll('a[href*="/channels/"]')) {
+      if(!visible(link))continue;
+      const info=this.postFromNode(link,c);
+      if(info && this.stateIn(info.card)) {
+        const {card,...record}=info;
+        records.set(identity(record),record);
+      }
+    }
+    return [...records.values()];
+  }
+  handleContextMenu(event) {
+    if(!event.isTrusted)return;
+    const target=event.target instanceof Element?event.target:event.target?.parentElement;
+    const info=this.postFromNode(target);
+    this.menuTarget=info?{info,at:Date.now()}:null;
   }
   seed(records) {
     this.catalog.clear(); this.knownThreads.clear();
@@ -303,7 +346,8 @@ class DiscordAdapter {
     const known = this.knownThreads.get(`${route.guildId}:${candidateId || route.channelId}`);
     const captured = this.links.get(`${route.guildId}:${candidateId || route.channelId}`);
     const follows = this.controls().filter(b=>!b.closest('[role="menu"]') && (FOLLOW.test(controlLabel(b)) || UNFOLLOW.test(controlLabel(b))));
-    const isThread = !!(candidateId || known || captured || (follows.length && !root));
+    const threadMarkup = !!main?.querySelector('[data-thread-id],[class*="threadChat"]');
+    const isThread = !!(candidateId || known || captured || (follows.length && !root) || (threadMarkup && !root));
     const guildAnchor = [...this.doc.querySelectorAll('nav a[aria-label],[role="tree"] a[aria-label]')].find(a=>a.getAttribute('href') === `/channels/${route.guildId}`);
     const guildName = guildAnchor?.getAttribute('aria-label') || known?.guildName || captured?.guildName || '';
     if (isThread) {
@@ -318,68 +362,86 @@ class DiscordAdapter {
   schedule() { if(this.timer)return;this.timer = setTimeout(()=>{this.timer=null;this.scan();},180); }
   scan() {
     const href = this.href();
-    if (href !== this.lastHref) { this.followSerial++; this.pending = null; this.lastHref = href; }
+    if (href !== this.lastHref) { this.followSerial++; clearTimeout(this.followTimer); this.pending = null; this.lastHref = href; this.menuTarget=null; this.seenExisting.clear(); }
     const c = this.inspect();
     if (c.type === 'forum') this.catalog.set(`${c.guildId}:${c.forumId}`,c);
     this.context = c;
     const sig = JSON.stringify(c);
     if (sig !== this.signature) { this.signature = sig; this.onContext(c); }
+    // Opening a post with an already-confirmed Following/Leave control can recover that visible bookmark.
+    const profile=this.isEnabled();
+    if(profile && c.type==='thread' && this.controls().some(b=>b.isConnected!==false&&!b.closest('[role="menu"]')&&UNFOLLOW.test(controlLabel(b)))) {
+      const key=profile+':'+identity(c);
+      if(!this.seenExisting.has(key)){this.seenExisting.add(key);this.onFollow(c);}
+    }
   }
   handleClick(event) {
-    if (!event.isTrusted || event.composedPath().some(n => n?.id === 'dfa-root')) return;
-    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-    if (!target) return;
-    const anchor = target.closest('a[href]');
-    if (anchor && this.context.type === 'forum' && this.forumRoot(this.main())?.contains(anchor)) {
-      try {
-        const p = parseLink(anchor.href), c = this.context;
-        if (p.guildId === c.guildId && p.threadId !== c.forumId) {
-          this.links.set(identity(p), {...c,threadId:p.threadId,originalTitle:this.title(anchor) || (anchor.getAttribute('aria-label') || anchor.textContent || '').trim()});
-          // Bound transient observations. Nothing is fetched or bulk-saved.
-          if (this.links.size > 500) this.links.delete(this.links.keys().next().value);
-        }
-      } catch { /* a message/user/other link is not a post candidate */ }
-    }
-    const button = target.closest('button,[role="button"],[role="menuitem"]');
-    if (!button || !this.isEnabled() || !FOLLOW.test(controlLabel(button))) return;
-    const c = this.inspect();
-    // Context-menu target cannot be tied reliably to the open post: deliberately ignore it.
-    if (c.type !== 'thread' || button.closest('[role="menu"]') || !this.controls().includes(button)) return;
-    const serial = ++this.followSerial, href = this.href(), profile = this.isEnabled();
-    const started = performance.now(); this.pending = {serial};
-    const check = () => {
-      if (serial !== this.followSerial || href !== this.href() || profile !== this.isEnabled()) return;
-      const current = this.inspect();
-      if (current.type !== 'thread' || identity(current) !== identity(c)) return;
-      // Require an inverse action on the same connected control, stable for 650 ms.
-      // Replacement controls cannot be tied reliably to the original; manual save remains available.
-      if (button.isConnected && visible(button) && !button.disabled && UNFOLLOW.test(controlLabel(button))) {
-        setTimeout(()=> {
-          if (serial === this.followSerial && href === this.href() && profile === this.isEnabled() && button.isConnected &&
-            visible(button) && !button.disabled && UNFOLLOW.test(controlLabel(button)) && identity(this.inspect()) === identity(c)) {
-            this.pending = null; this.followSerial++; this.onFollow(current);
-          }
-        },650); return;
+    if (!event.isTrusted || event.composedPath().some(n=>n?.id==='dfa-root')) return;
+    const target=event.target instanceof Element?event.target:event.target?.parentElement;
+    if(!target)return;
+    const anchor=target.closest('a[href]');
+    const c=this.context;
+    if(anchor && c.type==='forum') {
+      const found=this.postFromNode(anchor,c);
+      if(found){
+        const {card,...record}=found;
+        this.links.set(identity(record),record);
+        if(this.links.size>500)this.links.delete(this.links.keys().next().value);
       }
-      if (performance.now()-started < 8000) this.followTimer = setTimeout(check,220);
-      else { this.pending = null; this.log('native-follow-unconfirmed'); }
+    }
+    const button=target.closest('button,[role="button"],[role="menuitem"],[role="menuitemcheckbox"]');
+    if(!button||!this.isEnabled()||!FOLLOW.test(controlLabel(button)))return;
+    const inMenu=!!button.closest('[role="menu"]');
+    let info=this.inspect(),card=null;
+    if(inMenu&&this.menuTarget&&Date.now()-this.menuTarget.at<12000){
+      info=this.menuTarget.info;card=info.card;
+    }else if(info.type!=='thread'){
+      const found=this.postFromNode(button);
+      if(found){info=found;card=found.card;}
+    }
+    if(inMenu&&!card&&info.type!=='thread'){this.log('follow-target-unknown');return;}
+    if(info.type!=='thread'&&!info.threadId){this.log('follow-thread-unrecognized');return;}
+    if(!inMenu&&!card&&!this.controls().includes(button)){this.log('follow-control-out-of-scope');return;}
+    const {card:unused,...record}=info;
+    const serial=++this.followSerial,href=this.href(),profile=this.isEnabled(),started=performance.now();
+    clearTimeout(this.followTimer);this.pending={serial};
+    const valid=()=>{
+      if(serial!==this.followSerial||href!==this.href()||profile!==this.isEnabled())return false;
+      if(card)return !!card.isConnected;
+      const current=this.inspect();
+      return current.type==='thread'&&identity(current)===identity(record);
     };
-    this.followTimer = setTimeout(check,220);
+    const positive=()=>card?this.stateIn(card):this.controls().some(b=>!b.closest('[role="menu"]')&&UNFOLLOW.test(controlLabel(b)));
+    const check=()=>{
+      if(!valid())return;
+      if(positive()){
+        // Re-check after stability delay; the original button may have been replaced by React.
+        this.followTimer=setTimeout(()=>{
+          if(!valid()||!positive())return;
+          this.pending=null;this.followSerial++;this.onFollow(record);
+        },650);
+        return;
+      }
+      if(performance.now()-started<8000)this.followTimer=setTimeout(check,220);
+      else{this.pending=null;this.log('native-follow-unconfirmed');}
+    };
+    this.followTimer=setTimeout(check,220);
   }
   start() {
     this.doc.addEventListener('click',this.click,true);
+    this.doc.addEventListener('contextmenu',this.contextMenu,true);
     window.addEventListener('popstate',this.scheduled); window.addEventListener('hashchange',this.scheduled);
     this.observer = new MutationObserver(mutations=> {
       if (mutations.some(m=>m.target !== this.doc.getElementById('dfa-root') && !this.doc.getElementById('dfa-root')?.contains(m.target))) this.schedule();
     });
-    this.observer.observe(this.doc.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['aria-label','aria-pressed','data-thread-id']});
+    this.observer.observe(this.doc.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['aria-label','title','aria-pressed','data-thread-id']});
     // URL polling catches pushState/replaceState without patching Discord's History API.
     this.interval = setInterval(()=> { if (this.href() !== this.lastHref) this.scan(); },500);
     this.scan();
   }
   stop() {
     this.observer?.disconnect(); clearInterval(this.interval); clearTimeout(this.timer); clearTimeout(this.followTimer); this.followSerial++;
-    this.doc.removeEventListener('click',this.click,true); window.removeEventListener('popstate',this.scheduled); window.removeEventListener('hashchange',this.scheduled);
+    this.doc.removeEventListener('click',this.click,true); this.doc.removeEventListener('contextmenu',this.contextMenu,true); window.removeEventListener('popstate',this.scheduled); window.removeEventListener('hashchange',this.scheduled);
   }
 }
 
@@ -389,7 +451,7 @@ const STYLE = `
 :host{all:initial;color-scheme:dark;--bg:#242429;--card:#2e2e35;--fg:#f2f3f5;--muted:#bbbcc7;--line:#555560;--accent:#5865f2;--hover:#3b3b43;--on-accent:#fff;font-family:gg sans,Noto Sans,Helvetica Neue,Arial,sans-serif;font-size:var(--ui-size,13px);color:var(--fg);line-height:1.5}
 *{box-sizing:border-box} [hidden]{display:none!important} button,input,select{font:inherit} button,a,input,select,summary{outline-offset:3px} :focus-visible{outline:2px solid var(--accent)}
 button,select{border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--fg);padding:6px 9px;cursor:pointer;min-height:30px} button:hover,summary:hover{background:var(--hover)} button:disabled{opacity:.5;cursor:wait} button.primary{background:var(--accent);color:var(--on-accent);border-color:transparent} button.danger{border-color:#d86b78;color:var(--fg)} a{color:var(--fg);text-decoration:none} input{min-width:0;width:100%;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:8px} input[type=checkbox]{width:auto;accent-color:var(--accent)} input[type=range]{padding:0} input[type=file]{font-size:12px} p{margin:8px 0} small,.muted{color:var(--muted);font-size:.9em} h2{font-size:1.2em;margin:0} h3{font-size:1em;margin:15px 0 7px} .row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.grow{flex:1;min-width:0}.stack{display:grid;gap:9px}.notice{padding:9px;border:1px solid var(--line);border-radius:8px;overflow-wrap:anywhere}.status{color:var(--muted)}
-.panel{position:fixed;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line);border-radius:13px;box-shadow:0 12px 42px #0005;overflow:hidden;min-width:0;transition:box-shadow .12s}.panel.moving{box-shadow:0 16px 50px #0009;user-select:none}.header{display:flex;align-items:center;gap:5px;padding:11px 12px 8px;cursor:grab;touch-action:none;flex-shrink:0}.header strong{letter-spacing:.2px;flex:1;min-width:0}.icon{padding:3px 7px;min-width:30px;flex-shrink:0}.context{padding:0 13px 9px;overflow-wrap:anywhere;color:var(--muted);font-size:.9em}.tools{padding:0 12px 10px;display:grid;gap:7px;flex-shrink:0}.tools select{min-width:0;flex:1;width:30%}.profile{border:0;text-align:left;padding:0;background:none;color:var(--muted);font-size:.9em;min-height:25px}.list{overflow-y:auto;overscroll-behavior:contain;flex:1;min-height:0;padding:2px 10px 10px;scrollbar-width:thin}.card{border:1px solid var(--line);border-radius:9px;padding:var(--spacing,10px);background:var(--card);margin:0 0 8px;content-visibility:auto;contain-intrinsic-size:auto 140px}.card-title{font-size:var(--title-size,15px);font-weight:600;line-height:1.45;overflow-wrap:anywhere;word-break:normal;white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--title-lines,4);overflow:hidden}.card-title.full{display:block;overflow:visible;-webkit-line-clamp:unset}.card-title:hover{text-decoration:underline}.meta{font-size:.85em;color:var(--muted);overflow-wrap:anywhere;margin:6px 0}.actions{display:flex;gap:5px;align-items:center;flex-wrap:wrap}.actions button{font-size:.85em;min-height:27px;padding:2px 7px}.star[aria-pressed=true]{background:var(--accent);color:var(--on-accent)}.empty{padding:28px 10px;text-align:center;color:var(--muted)}.footer{padding:7px 12px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.85em;color:var(--muted)}.footer button{font-size:inherit;padding:1px 6px;min-height:24px}.tab{position:fixed;width:40px;height:112px;padding:6px;writing-mode:vertical-rl;border-radius:9px;box-shadow:0 4px 20px #0004;background:var(--bg);color:var(--fg)}.quick{position:fixed;right:16px;top:12px;max-width:min(300px,90vw);box-shadow:0 3px 15px #0005;background:var(--bg)}
+.panel{position:fixed;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line);border-radius:13px;box-shadow:0 12px 42px #0005;overflow:hidden;min-width:0;transition:box-shadow .12s}.panel.moving{box-shadow:0 16px 50px #0009;user-select:none}.header{display:flex;align-items:center;gap:5px;padding:11px 12px 8px;cursor:grab;touch-action:none;flex-shrink:0}.header strong{letter-spacing:.2px;flex:1;min-width:0}.icon{padding:3px 7px;min-width:30px;flex-shrink:0}.context{padding:0 13px 9px;overflow-wrap:anywhere;color:var(--muted);font-size:.9em}.tools{padding:0 12px 10px;display:grid;gap:7px;flex-shrink:0}.tools select{min-width:0;flex:1;width:30%}.profile{border:0;text-align:left;padding:0;background:none;color:var(--muted);font-size:.9em;min-height:25px}.list{overflow-y:auto;overscroll-behavior:contain;flex:1;min-height:0;padding:2px 10px 10px;scrollbar-width:thin}.card{border:1px solid var(--line);border-radius:9px;padding:var(--spacing,10px);background:var(--card);margin:0 0 8px;content-visibility:auto;contain-intrinsic-size:auto 140px}.card-title{font-size:var(--title-size,15px);font-weight:600;line-height:1.45;overflow-wrap:anywhere;word-break:normal;white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--title-lines,4);overflow:hidden}.card-title.full{display:block;overflow:visible;-webkit-line-clamp:unset}.card-title:hover{text-decoration:underline}.meta{font-size:.85em;color:var(--muted);overflow-wrap:anywhere;margin:6px 0}.actions{display:flex;gap:5px;align-items:center;flex-wrap:wrap}.actions button{font-size:.85em;min-height:27px;padding:2px 7px}.star[aria-pressed=true]{background:var(--accent);color:var(--on-accent)}.empty{padding:28px 10px;text-align:center;color:var(--muted)}.footer{padding:7px 12px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.85em;color:var(--muted)}.footer button{font-size:inherit;padding:1px 6px;min-height:24px}.tab{position:fixed;width:40px;height:92px;padding:7px 4px;white-space:nowrap;writing-mode:vertical-rl;text-orientation:upright;letter-spacing:1px;border-radius:9px;box-shadow:0 4px 20px #0004;background:var(--bg);color:var(--fg)}.quick{position:fixed;right:16px;top:12px;max-width:min(300px,90vw);box-shadow:0 3px 15px #0005;background:var(--bg)}
 .handle{position:absolute;touch-action:none;z-index:2}.handle[data-edge=n],.handle[data-edge=s]{height:6px;left:12px;right:12px;cursor:ns-resize}.handle[data-edge=n]{top:0}.handle[data-edge=s]{bottom:0}.handle[data-edge=e],.handle[data-edge=w]{width:6px;top:12px;bottom:12px;cursor:ew-resize}.handle[data-edge=e]{right:0}.handle[data-edge=w]{left:0}.handle[data-edge=ne],.handle[data-edge=nw],.handle[data-edge=se],.handle[data-edge=sw]{width:12px;height:12px}.handle[data-edge=ne]{right:0;top:0;cursor:nesw-resize}.handle[data-edge=nw]{left:0;top:0;cursor:nwse-resize}.handle[data-edge=se]{right:0;bottom:0;cursor:nwse-resize;background:linear-gradient(135deg,transparent 65%,var(--line) 66%,var(--line) 75%,transparent 76%)}.handle[data-edge=sw]{left:0;bottom:0;cursor:nesw-resize}
 .overlay{position:fixed;inset:0;background:#0008;display:flex;align-items:center;justify-content:center;padding:16px}.dialog{width:520px;max-width:100%;max-height:92vh;overflow:auto;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:13px;padding:18px;box-shadow:0 20px 80px #0008}.dialog label{display:grid;gap:4px}.dialog label.check{display:flex;align-items:start;gap:8px}.dialog label.check input{margin-top:5px}.dialog .error{color:var(--fg);border-left:3px solid #ef6376;padding-left:8px;white-space:pre-wrap;overflow-wrap:anywhere}.dialog .row.end{justify-content:flex-end;margin-top:14px}.dialog header{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px}.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);max-width:min(600px,95vw);background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:11px 16px;box-shadow:0 7px 25px #0006;white-space:pre-wrap;overflow-wrap:anywhere}.toast.error{border-color:#ef6376}.pager{width:100%}details{border-top:1px solid var(--line);padding:8px 0}summary{cursor:pointer;padding:5px;border-radius:5px}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}`;
@@ -437,9 +499,14 @@ class ArchiveApp {
     menu('显示 Forum Archive',()=>this.setMode('expanded',true));
     menu('Forum Archive 设置',()=>this.settings());
     menu('切换本地资料库 / 账号',()=>this.chooseProfile());
+    menu('导入当前可见的已关注帖',()=>this.importVisibleFollowed());
     menu('重置面板位置',()=>this.resetLayout());
     this.layout(); this.renderList();
-    await this.chooseProfile();
+    const preferred=await this.storage.get(`${PREFIX}activeProfile`,null);
+    const available=await this.profiles();
+    const chosen=available.find(p=>p.id===preferred) || (available.length===1?available[0]:null);
+    if(chosen)await this.activate(chosen);
+    else await this.chooseProfile();
     const teardown = e=> { if(!e.persisted)this.stop(); }; window.addEventListener('pagehide',teardown);
     this.cleanups.push(()=>window.removeEventListener('pagehide',teardown));
   }
@@ -526,6 +593,7 @@ class ArchiveApp {
     const nextPrefs=cleanPrefs(savedPrefs || {...cleanPrefs(),height:Math.round(innerHeight*.7)});
     const nextStore=new ArchiveStore(this.storage,profile.id,()=> {if(this.store===nextStore)this.changed();});
     await nextStore.refresh(); // Keep the previous library intact if loading fails.
+    await this.storage.set(`${PREFIX}activeProfile`,profile.id);
     this.profile=profile;this.prefs=nextPrefs;this.store=nextStore;this.revision++;this.query='';this.search.value='';this.expanded.clear();this.scroll.clear();
     this.force=false;this.changed();this.layout();this.applyTheme();this.adapter.scan();
   }
@@ -563,7 +631,7 @@ class ArchiveApp {
     this.panel=element('section',{class:'panel','aria-label':'Forum Archive 收藏管理'});
     this.header=element('header',{class:'header'},element('strong',{text:'Forum Archive'}),
       btn('+','添加帖子链接',()=>this.addDialog()),btn('⚙','设置',()=>this.settings()),btn('−','折叠面板',()=>this.setMode('collapsed')),btn('×','隐藏面板',()=>this.setMode('hidden')));
-    this.contextEl=element('div',{class:'context'});this.profileEl=element('button',{class:'profile',onclick:this.safe(()=>this.chooseProfile())});
+    this.contextEl=element('div',{class:'context'});this.profileEl=element('div',{class:'profile'});
     this.search=element('input',{type:'search',placeholder:'搜索标题 / 论坛名称','aria-label':'搜索收藏'});
     this.search.addEventListener('input',()=> {this.query=this.search.value;this.limit=80;this.renderList();});
     this.scope=element('select',{'aria-label':'筛选范围'},element('option',{value:'forum',text:'本频道 / 待归属'}),element('option',{value:'server',text:'整个服务器'}));
@@ -575,7 +643,7 @@ class ArchiveApp {
     this.count=element('span',{role:'status'});
     this.panel.append(this.header,this.contextEl,element('div',{class:'tools'},this.profileEl,this.search,element('div',{class:'row'},this.scope,this.sort),this.pageSave),this.list,
       element('footer',{class:'footer'},this.count,btn('备份 / 恢复','数据导入导出',()=>this.dataDialog(),'')));
-    this.tab=btn('★ Forum Archive','展开收藏面板',()=>this.setMode('expanded',true),'tab');
+    this.tab=btn('关注帖','展开收藏面板',()=>this.setMode('expanded',true),'tab');
     this.tab.addEventListener('mouseenter',()=> {if(this.prefs.hover)this.safe(()=>this.setMode('expanded',true))();});
     this.quick=btn('☆ 本地收藏此帖','独立帖子收藏入口',()=>this.saveCurrent(),'quick');
     this.root.append(this.panel,this.tab,this.quick);
@@ -681,6 +749,20 @@ class ArchiveApp {
     if(this.store.records.has(identity(c)))return this.editDialog(this.store.records.get(identity(c)));
     await this.store.add(makeRecord(c,'manual-page'));this.toast('已保存到本地资料库；退出原生关注也会保留。');this.renderList();
   }
+  async importVisibleFollowed() {
+    if(!this.profile)return this.chooseProfile();
+    const candidates=this.adapter.collectVisibleFollowed();
+    if(!candidates.length){this.toast('当前可见论坛卡片中没有能够明确确认已关注的帖子；无法读取未渲染或已失去关注状态的历史帖子。');return;}
+    let added=0;
+    for(const candidate of candidates){
+      const key=identity(candidate);
+      if(!this.store.records.has(key)){
+        const result=await this.store.add(makeRecord(candidate,'native-follow'),{automatic:true});
+        if(result)added++;
+      }
+    }
+    this.toast(`已从可见且有明确已关注标记的帖子中新增 ${added} 条，本次发现 ${candidates.length} 条。`);
+  }
   async capture(c) {
     if(!this.profile||!this.prefs.autoFollow)return;
     if(this.store.records.has(identity(c)))await this.store.observe(c,true);
@@ -697,13 +779,11 @@ class ArchiveApp {
       const title=element('input',{maxlength:'20000',placeholder:'可留空，稍后修改','aria-label':'帖子标题'});
       const forum=element('input',{placeholder:'父论坛频道 ID，可留空','aria-label':'父论坛频道 ID'});
       const forumName=element('input',{maxlength:'500',placeholder:'父论坛名称，可留空','aria-label':'父论坛名称'});
-      const check=element('input',{type:'checkbox'});
+      // Link ID validation remains mandatory; no redundant confirmation checkbox.
       body.append(element('label',{text:'帖子永久链接'},url),element('label',{text:'标题'},title),element('label',{text:'父论坛 ID'},forum),element('label',{text:'父论坛名称'},forumName),
-        element('p',{class:'muted',text:'URL 的第二个 ID 可能是普通频道，也可能是帖子。带消息 ID 的链接仍取第二个 ID；不会把最后的消息 ID 当成帖子。无法确定父论坛时请留空。'}),
-        element('label',{class:'check'},check,element('span',{text:'我确认此链接的频道 ID 属于论坛帖子；填写的父论坛归属正确。'})),
+        element('p',{class:'muted',text:'请输入论坛帖子链接。无法从链接确定帖子类型或父论坛时，将记录标为待归属；请在收藏后核对。'}),
         element('button',{class:'primary',text:'保存收藏',onclick:submit(async()=>{
-          if(!check.checked)throw new Error('请先确认链接属于论坛帖子。');
-          const parsed=parseLink(url.value),fid=forum.value.trim()||null;
+                    const parsed=parseLink(url.value),fid=forum.value.trim()||null;
           if(fid && (!ID.test(fid)||fid===parsed.threadId))throw new Error('父论坛 ID 必须是不同于帖子 ID 的 Snowflake 字符串。');
           const known=this.store.records.get(identity(parsed));
           if(known){close();this.toast('已收藏该帖子，没有创建重复记录。');return;}
@@ -772,7 +852,7 @@ class ArchiveApp {
         element('h3',{text:'收藏与识别'}),select('defaultScope','新服务器默认筛选',[['forum','本频道'],['server','整个服务器']]),select('defaultSort','新服务器默认排序',SORTS.map((s,i)=>[s,['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A → Z','标题 Z → A','星标优先'][i]])),
         check('autoFollow','实验性：原生关注成功后记录本地收藏'),check('debug','控制台输出无标题、ID、链接的调试事件'),
         element('p',{class:'notice',text:'自动关注识别为部分支持，默认关闭。仅观察当前帖子中由你点击的关注按钮稳定变为退出状态；不保证服务器已最终确认。右键菜单、控件替换、无可见确认信号时请手动收藏。中/日/英标签规则仅经模拟测试，未在真实账号中验证。'}),
-        element('h3',{text:'数据与关于'}),element('button',{text:'备份 / 恢复 JSON',onclick:this.safe(()=>this.dataDialog())}),element('button',{text:'选择本地资料库 / 切换账号',onclick:this.safe(()=>this.chooseProfile())}),
+        element('h3',{text:'数据与关于'}),element('button',{text:'备份 / 恢复 JSON',onclick:this.safe(()=>this.dataDialog())}),element('p',{class:'muted',text:'资料库切换：请使用 Tampermonkey 扩展菜单中的“切换本地资料库 / 账号”。'}),
         element('p',{class:'muted',text:`Discord Forum Archive ${VERSION} · 本地数据格式 ${SCHEMA}。不读取 Token/Cookie，不调用 Discord API，不上传收藏。资料库需手动选择。逐变更日志合并，保留完整标题和删除记录；同一字段并发修改按逻辑时钟确定顺序，无法提供严格事务。日志随编辑次数增长，请定期导出备份。`} ),
         element('p',{class:'muted',text:'页面识别依赖可见 DOM，Discord 更新可能影响兼容性。主题读取可用 CSS 变量；复杂主题近似为纯色。网页注入有兼容和服务规则风险，本项目不代表 Discord 官方许可。'}),
         element('button',{class:'primary',text:'保存设置',onclick:submit(async()=>{

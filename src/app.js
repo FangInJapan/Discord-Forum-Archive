@@ -42,9 +42,14 @@ export class ArchiveApp {
     menu('显示 Forum Archive',()=>this.setMode('expanded',true));
     menu('Forum Archive 设置',()=>this.settings());
     menu('切换本地资料库 / 账号',()=>this.chooseProfile());
+    menu('导入当前可见的已关注帖',()=>this.importVisibleFollowed());
     menu('重置面板位置',()=>this.resetLayout());
     this.layout(); this.renderList();
-    await this.chooseProfile();
+    const preferred=await this.storage.get(`${PREFIX}activeProfile`,null);
+    const available=await this.profiles();
+    const chosen=available.find(p=>p.id===preferred) || (available.length===1?available[0]:null);
+    if(chosen)await this.activate(chosen);
+    else await this.chooseProfile();
     const teardown = e=> { if(!e.persisted)this.stop(); }; window.addEventListener('pagehide',teardown);
     this.cleanups.push(()=>window.removeEventListener('pagehide',teardown));
   }
@@ -131,6 +136,7 @@ export class ArchiveApp {
     const nextPrefs=cleanPrefs(savedPrefs || {...cleanPrefs(),height:Math.round(innerHeight*.7)});
     const nextStore=new ArchiveStore(this.storage,profile.id,()=> {if(this.store===nextStore)this.changed();});
     await nextStore.refresh(); // Keep the previous library intact if loading fails.
+    await this.storage.set(`${PREFIX}activeProfile`,profile.id);
     this.profile=profile;this.prefs=nextPrefs;this.store=nextStore;this.revision++;this.query='';this.search.value='';this.expanded.clear();this.scroll.clear();
     this.force=false;this.changed();this.layout();this.applyTheme();this.adapter.scan();
   }
@@ -168,7 +174,7 @@ export class ArchiveApp {
     this.panel=element('section',{class:'panel','aria-label':'Forum Archive 收藏管理'});
     this.header=element('header',{class:'header'},element('strong',{text:'Forum Archive'}),
       btn('+','添加帖子链接',()=>this.addDialog()),btn('⚙','设置',()=>this.settings()),btn('−','折叠面板',()=>this.setMode('collapsed')),btn('×','隐藏面板',()=>this.setMode('hidden')));
-    this.contextEl=element('div',{class:'context'});this.profileEl=element('button',{class:'profile',onclick:this.safe(()=>this.chooseProfile())});
+    this.contextEl=element('div',{class:'context'});this.profileEl=element('div',{class:'profile'});
     this.search=element('input',{type:'search',placeholder:'搜索标题 / 论坛名称','aria-label':'搜索收藏'});
     this.search.addEventListener('input',()=> {this.query=this.search.value;this.limit=80;this.renderList();});
     this.scope=element('select',{'aria-label':'筛选范围'},element('option',{value:'forum',text:'本频道 / 待归属'}),element('option',{value:'server',text:'整个服务器'}));
@@ -180,7 +186,7 @@ export class ArchiveApp {
     this.count=element('span',{role:'status'});
     this.panel.append(this.header,this.contextEl,element('div',{class:'tools'},this.profileEl,this.search,element('div',{class:'row'},this.scope,this.sort),this.pageSave),this.list,
       element('footer',{class:'footer'},this.count,btn('备份 / 恢复','数据导入导出',()=>this.dataDialog(),'')));
-    this.tab=btn('★ Forum Archive','展开收藏面板',()=>this.setMode('expanded',true),'tab');
+    this.tab=btn('关注帖','展开收藏面板',()=>this.setMode('expanded',true),'tab');
     this.tab.addEventListener('mouseenter',()=> {if(this.prefs.hover)this.safe(()=>this.setMode('expanded',true))();});
     this.quick=btn('☆ 本地收藏此帖','独立帖子收藏入口',()=>this.saveCurrent(),'quick');
     this.root.append(this.panel,this.tab,this.quick);
@@ -286,6 +292,20 @@ export class ArchiveApp {
     if(this.store.records.has(identity(c)))return this.editDialog(this.store.records.get(identity(c)));
     await this.store.add(makeRecord(c,'manual-page'));this.toast('已保存到本地资料库；退出原生关注也会保留。');this.renderList();
   }
+  async importVisibleFollowed() {
+    if(!this.profile)return this.chooseProfile();
+    const candidates=this.adapter.collectVisibleFollowed();
+    if(!candidates.length){this.toast('当前可见论坛卡片中没有能够明确确认已关注的帖子；无法读取未渲染或已失去关注状态的历史帖子。');return;}
+    let added=0;
+    for(const candidate of candidates){
+      const key=identity(candidate);
+      if(!this.store.records.has(key)){
+        const result=await this.store.add(makeRecord(candidate,'native-follow'),{automatic:true});
+        if(result)added++;
+      }
+    }
+    this.toast(`已从可见且有明确已关注标记的帖子中新增 ${added} 条，本次发现 ${candidates.length} 条。`);
+  }
   async capture(c) {
     if(!this.profile||!this.prefs.autoFollow)return;
     if(this.store.records.has(identity(c)))await this.store.observe(c,true);
@@ -302,13 +322,11 @@ export class ArchiveApp {
       const title=element('input',{maxlength:'20000',placeholder:'可留空，稍后修改','aria-label':'帖子标题'});
       const forum=element('input',{placeholder:'父论坛频道 ID，可留空','aria-label':'父论坛频道 ID'});
       const forumName=element('input',{maxlength:'500',placeholder:'父论坛名称，可留空','aria-label':'父论坛名称'});
-      const check=element('input',{type:'checkbox'});
+      // Link ID validation remains mandatory; no redundant confirmation checkbox.
       body.append(element('label',{text:'帖子永久链接'},url),element('label',{text:'标题'},title),element('label',{text:'父论坛 ID'},forum),element('label',{text:'父论坛名称'},forumName),
-        element('p',{class:'muted',text:'URL 的第二个 ID 可能是普通频道，也可能是帖子。带消息 ID 的链接仍取第二个 ID；不会把最后的消息 ID 当成帖子。无法确定父论坛时请留空。'}),
-        element('label',{class:'check'},check,element('span',{text:'我确认此链接的频道 ID 属于论坛帖子；填写的父论坛归属正确。'})),
+        element('p',{class:'muted',text:'请输入论坛帖子链接。无法从链接确定帖子类型或父论坛时，将记录标为待归属；请在收藏后核对。'}),
         element('button',{class:'primary',text:'保存收藏',onclick:submit(async()=>{
-          if(!check.checked)throw new Error('请先确认链接属于论坛帖子。');
-          const parsed=parseLink(url.value),fid=forum.value.trim()||null;
+                    const parsed=parseLink(url.value),fid=forum.value.trim()||null;
           if(fid && (!ID.test(fid)||fid===parsed.threadId))throw new Error('父论坛 ID 必须是不同于帖子 ID 的 Snowflake 字符串。');
           const known=this.store.records.get(identity(parsed));
           if(known){close();this.toast('已收藏该帖子，没有创建重复记录。');return;}
@@ -377,7 +395,7 @@ export class ArchiveApp {
         element('h3',{text:'收藏与识别'}),select('defaultScope','新服务器默认筛选',[['forum','本频道'],['server','整个服务器']]),select('defaultSort','新服务器默认排序',SORTS.map((s,i)=>[s,['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A → Z','标题 Z → A','星标优先'][i]])),
         check('autoFollow','实验性：原生关注成功后记录本地收藏'),check('debug','控制台输出无标题、ID、链接的调试事件'),
         element('p',{class:'notice',text:'自动关注识别为部分支持，默认关闭。仅观察当前帖子中由你点击的关注按钮稳定变为退出状态；不保证服务器已最终确认。右键菜单、控件替换、无可见确认信号时请手动收藏。中/日/英标签规则仅经模拟测试，未在真实账号中验证。'}),
-        element('h3',{text:'数据与关于'}),element('button',{text:'备份 / 恢复 JSON',onclick:this.safe(()=>this.dataDialog())}),element('button',{text:'选择本地资料库 / 切换账号',onclick:this.safe(()=>this.chooseProfile())}),
+        element('h3',{text:'数据与关于'}),element('button',{text:'备份 / 恢复 JSON',onclick:this.safe(()=>this.dataDialog())}),element('p',{class:'muted',text:'资料库切换：请使用 Tampermonkey 扩展菜单中的“切换本地资料库 / 账号”。'}),
         element('p',{class:'muted',text:`Discord Forum Archive ${VERSION} · 本地数据格式 ${SCHEMA}。不读取 Token/Cookie，不调用 Discord API，不上传收藏。资料库需手动选择。逐变更日志合并，保留完整标题和删除记录；同一字段并发修改按逻辑时钟确定顺序，无法提供严格事务。日志随编辑次数增长，请定期导出备份。`} ),
         element('p',{class:'muted',text:'页面识别依赖可见 DOM，Discord 更新可能影响兼容性。主题读取可用 CSS 变量；复杂主题近似为纯色。网页注入有兼容和服务规则风险，本项目不代表 Discord 官方许可。'}),
         element('button',{class:'primary',text:'保存设置',onclick:submit(async()=>{
