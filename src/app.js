@@ -533,22 +533,33 @@ export class ArchiveApp {
       const controls={};
       const select=(key,label,options)=> {const el=element('select',{'aria-label':label},...options.map(([value,text])=>element('option',{value,text})));el.value=String(p[key]);controls[key]=el;return element('label',{text:label},el);};
       const number=(key,label,min,max)=> {const el=element('input',{type:'number',min,max,step:1,value:p[key],'aria-label':label});controls[key]=el;return element('label',{text:label},el);};
+      const sizeSlider=(key,label,min,max)=>{
+        const current=Math.round(100*(p[key]-min)/Math.max(1,max-min));
+        const el=element('input',{type:'range',min:0,max:100,step:1,value:Math.max(0,Math.min(100,current)),'aria-label':label});
+        controls[key]=el;
+        const output=element('output',{text:el.value+'%'});
+        el.addEventListener('input',()=>output.textContent=el.value+'%');
+        return element('label',{class:'slider-setting'},
+          element('span',{},element('span',{text:label}),output),el);
+      };
+      const maxWidth=Math.max(300,Math.min(760,innerWidth-16)),maxHeight=Math.max(240,Math.min(2000,Math.floor(innerHeight*.9)));
       const check=(key,label)=> {const el=element('input',{type:'checkbox',checked:p[key]});controls[key]=el;return element('label',{class:'check'},el,element('span',{text:label}));};
       body.append(element('h3',{text:'外观'}),select('theme','主题',[['discord','跟随 Discord'],['dark','强制深色'],['light','强制浅色']]),
         element('div',{class:'row'},number('titleSize','标题字号（12–22 px）',12,22),number('uiSize','界面字号（11–18 px）',11,18)),
         select('lines','标题显示行数',[[1,'单行'],[2,'2 行'],[3,'3 行'],[4,'4 行'],[0,'完整显示']]),select('density','列表密度',[['compact','紧凑'],['standard','标准'],['relaxed','宽松']]),
-        element('h3',{text:'布局'}),element('div',{class:'row'},number('width','宽度（300–760 px）',300,760),number('height','高度（按视口限制）',240,2000)),
+        element('h3',{text:'布局'}),sizeSlider('width','面板宽度',300,maxWidth),sizeSlider('height','面板高度',240,maxHeight),
         select('dock','停靠位置',[['none','自由位置'],['left','左侧'],['right','右侧'],['top','顶部'],['bottom','底部']]),check('snap','拖动到距离边缘 24 px 内时吸附'),check('hover','悬停停靠标签时展开（默认关闭）'),check('autoOpen','进入已识别论坛时显示面板（保留手动折叠/隐藏）'),
-        element('button',{text:'重置位置与尺寸',onclick:submit(async()=>{await this.resetLayout();controls.width.value=this.prefs.width;controls.height.value=this.prefs.height;controls.dock.value=this.prefs.dock;})}),
+        element('button',{text:'重置位置与尺寸',onclick:submit(async()=>{await this.resetLayout();controls.width.value=Math.round(100*(this.prefs.width-300)/Math.max(1,maxWidth-300));controls.height.value=Math.round(100*(this.prefs.height-240)/Math.max(1,maxHeight-240));controls.dock.value=this.prefs.dock;})}),
         element('h3',{text:'收藏与识别'}),select('defaultScope','新服务器默认筛选',[['forum','本频道'],['server','整个服务器']]),select('defaultSort','新服务器默认排序',SORTS.map((s,i)=>[s,['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A → Z','标题 Z → A','星标优先'][i]])),
         check('autoFollow','实验性：原生关注成功后记录本地收藏'),check('debug','控制台输出无标题、ID、链接的调试事件'),
-        element('p',{class:'notice',text:'自动关注识别为部分支持，默认关闭。仅观察当前帖子中由你点击的关注按钮稳定变为退出状态；不保证服务器已最终确认。右键菜单、控件替换、无可见确认信号时请手动收藏。中/日/英标签规则仅经模拟测试，未在真实账号中验证。'}),
-        element('h3',{text:'数据与关于'}),element('button',{text:'备份 / 恢复 JSON',onclick:this.safe(()=>this.dataDialog())}),element('p',{class:'muted',text:'资料库切换：请使用 Tampermonkey 扩展菜单中的“切换本地资料库 / 账号”。'}),
-        element('p',{class:'muted',text:`Discord Forum Archive ${VERSION} · 本地数据格式 ${SCHEMA}。不读取 Token/Cookie，不调用 Discord API，不上传收藏。资料库需手动选择。逐变更日志合并，保留完整标题和删除记录；同一字段并发修改按逻辑时钟确定顺序，无法提供严格事务。日志随编辑次数增长，请定期导出备份。`} ),
-        element('p',{class:'muted',text:'页面识别依赖可见 DOM，Discord 更新可能影响兼容性。主题读取可用 CSS 变量；复杂主题近似为纯色。网页注入有兼容和服务规则风险，本项目不代表 Discord 官方许可。'}),
+        element('h3',{text:'关于'}),element('p',{class:'muted',text:'版本 '+VERSION+' · 使用当前页面可见信息识别帖子，原生关注同步为实验性功能。'}),
         element('button',{class:'primary',text:'保存设置',onclick:submit(async()=>{
           const patch={};for(const [key,el] of Object.entries(controls)) {
             if(el.type==='checkbox')patch[key]=el.checked;
+            else if((key==='width'||key==='height')&&el.type==='range'){
+              const low=key==='width'?300:240,high=key==='width'?maxWidth:maxHeight;
+              patch[key]=Math.round(low+(high-low)*Number(el.value)/100);
+            }
             else if(el.type==='number'||key==='lines'){if(!el.checkValidity())throw new Error(`请检查“${el.getAttribute('aria-label')}”的范围。`);patch[key]=Number(el.value);}
             else patch[key]=el.value;
           }
