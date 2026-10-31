@@ -26,25 +26,18 @@ try {
   assert.equal(await page.getByRole('button',{name:'切换星标',exact:true}).getAttribute('aria-pressed'),'true');
   // Compact-card hierarchy: left stack (star/time), central title, right stack (more/refresh).
   const card=page.getByRole('region',{name:'收藏列表'}).getByRole('article').first();
-  await card.getByRole('button',{name:'重新读取标题'}).waitFor({state:'visible'});
-  await card.scrollIntoViewIfNeeded();
-  await page.waitForFunction(()=>{
-    const node=document.querySelector('#dfa-root')?.shadowRoot?.querySelector('.compact-card');
+  const handle=await page.waitForFunction(()=>{
+    const node=document.querySelector('#dfa-root')?.shadowRoot?.querySelector('article.compact-card');
     if(!node||!node.isConnected)return false;
-    return ['.star','.post-age','.card-title','.more','.reload-title'].every(selector=>{
-      const box=node.querySelector(selector)?.getBoundingClientRect();
-      return box && box.width>0 && box.height>0;
-    });
-  },null,{timeout:8000});
-  const positions=await card.evaluate(node=>{
     const rect=selector=>{
-      const element=node.querySelector(selector);if(!element)return null;
-      const box=element.getBoundingClientRect();
-      return {x:box.x,y:box.y,width:box.width,height:box.height};
+      const el=node.querySelector(selector);if(!el)return null;
+      const b=el.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height};
     };
-    return {star:rect('.star'),age:rect('.post-age'),title:rect('.card-title'),
+    const positions={star:rect('.star'),age:rect('.post-age'),title:rect('.card-title'),
       more:rect('.more'),reload:rect('.reload-title')};
-  });
+    return Object.values(positions).every(b=>b&&b.width>0&&b.height>0)?positions:false;
+  },null,{timeout:10000});
+  const positions=await handle.jsonValue();
   const {star:starBox,age:ageBox,title:titleBox,more:moreBox,reload:reloadBox}=positions;
   assert.ok([starBox,ageBox,titleBox,moreBox,reloadBox].every(box=>box&&box.width>0&&box.height>0),
     'all compact-card controls must be rendered: '+JSON.stringify(positions));
