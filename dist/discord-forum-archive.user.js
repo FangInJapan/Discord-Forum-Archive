@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Forum Archive
 // @namespace    https://github.com/FangInJapan/Discord-Forum-Archive
-// @version      1.1.1
+// @version      1.1.2
 // @description  独立保存 Discord 论坛帖子收藏；支持分类、长标题、备份和可调面板。
 // @author       FangInJapan
 // @match        https://discord.com/channels/*
@@ -26,7 +26,7 @@
 
 // ---- core.js ----
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-const VERSION = '1.1.1';
+const VERSION = '1.1.2';
 const SCHEMA = 1;
 const PREFIX = 'dfa:v1:';
 const ID = /^[0-9]{16,22}$/;
@@ -517,35 +517,95 @@ button,select{border:1px solid var(--line);border-radius:7px;background:var(--ca
 .overlay{position:fixed;inset:0;background:#0008;display:flex;align-items:center;justify-content:center;padding:16px}.dialog{width:520px;max-width:100%;max-height:92vh;overflow:auto;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:13px;padding:18px;box-shadow:0 20px 80px #0008}.dialog label{display:grid;gap:4px}.dialog label.check{display:flex;align-items:start;gap:8px}.dialog label.check input{margin-top:5px}.dialog .error{color:var(--fg);border-left:3px solid #ef6376;padding-left:8px;white-space:pre-wrap;overflow-wrap:anywhere}.dialog .row.end{justify-content:flex-end;margin-top:14px}.dialog header{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px}.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);max-width:min(600px,95vw);background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:11px 16px;box-shadow:0 7px 25px #0006;white-space:pre-wrap;overflow-wrap:anywhere}.toast.error{border-color:#ef6376}.pager{width:100%}details{border-top:1px solid var(--line);padding:8px 0}summary{cursor:pointer;padding:5px;border-radius:5px}
 
 /* V1.1 compact Chinese-first forum bookmarks */
-.header{padding:7px 10px 5px;gap:4px}.header strong{font-size:13px}
-.context{display:block;width:calc(100% - 20px);margin:0 10px 5px;padding:2px 3px;min-height:22px;
+.header{padding:8px 12px 8px;gap:4px}.header strong{font-size:14px;font-weight:600;letter-spacing:0}
+.context{display:block;width:calc(100% - 24px);margin:0 12px 8px;padding:4px 0;min-height:28px;
   background:transparent;border:0;text-align:left;font-size:var(--ui-size,13px);color:var(--muted);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .context:hover{color:var(--fg);background:var(--hover)}
-.tools{padding:0 9px 7px;gap:5px}
-.tools input[type=search]{padding:5px 8px;height:32px}
-.filters{display:grid;grid-template-columns:minmax(72px,.85fr) minmax(86px,1.4fr) 34px;gap:5px;align-items:center;min-width:0}
+.tools{padding:0 12px 12px;gap:8px}
+.tools input[type=search]{padding:8px 12px;height:36px}
+.filters{display:grid;grid-template-columns:minmax(88px,.85fr) minmax(90px,1.4fr) 36px;gap:8px;align-items:center;min-width:0}
 .scope-toggle{display:flex;align-items:center;justify-content:center;border-radius:16px;
  min-width:0;width:100%;font-size:11px;padding:4px 5px;min-height:30px;background:var(--card);white-space:nowrap}
 .scope-toggle::before{content:'';width:7px;height:7px;flex:none;background:var(--muted);border-radius:99px;margin-right:5px}
 .scope-toggle[aria-checked=true]{background:var(--accent);color:var(--on-accent)}
 .scope-toggle[aria-checked=true]::before{background:var(--on-accent)}
-.collection-select{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;min-width:0;padding:4px 6px;font-size:11px}
+.collection-select{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;min-width:0;padding:6px 8px;font-size:12px;border-radius:8px}
 .sort-slot{position:relative;display:flex;align-items:center;justify-content:center;width:34px;height:30px;
  background:var(--card);border:1px solid var(--line);border-radius:7px;overflow:hidden;font-size:20px}
 .sort-slot select{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;min-height:0}
-.page-save{display:block;width:100%;min-height:29px;border-color:var(--line);padding:4px 10px;font-weight:600}
-.list{padding:2px 8px 8px}
-.compact-card{display:grid;grid-template-columns:25px 36px minmax(0,1fr) 25px;
-  gap:5px;align-items:start;padding:7px 5px;margin-bottom:4px;border-radius:7px;contain-intrinsic-size:auto 60px}
-.compact-card .card-title{font-size:var(--title-size,15px);line-height:1.4;min-width:0;overflow-wrap:anywhere;padding-top:1px}
-.compact-card button{min-height:24px;border:0;background:transparent;padding:1px 2px}
-.compact-card .star{font-size:17px;line-height:21px}
-.compact-card .star[aria-pressed=true]{color:#efc65e}
-.compact-card .post-age{font-size:10px;color:var(--muted);text-align:center;line-height:23px;white-space:nowrap;cursor:help}
-.compact-card .more{font-size:21px;line-height:20px;white-space:nowrap}
-.compact-card button:hover{background:var(--hover)}
-.footer{padding:5px 9px;align-items:center;flex-wrap:nowrap}
+.page-save{display:block;width:100%;min-height:36px;padding:8px 12px;font-weight:600;border:1px solid var(--accent);border-radius:8px;background:color-mix(in srgb,var(--accent) 12%,var(--card));color:var(--fg)}.page-save:hover{background:color-mix(in srgb,var(--accent) 20%,var(--card))}
+.list{padding:0 12px 12px}
+/* Compact reading hierarchy:
+   Primary = long post title; secondary = action affordances;
+   tertiary = title observation time. Use Discord palette tokens and
+   4/8/12/16px spacing scale; no new fixed brand colors. */
+.compact-card{
+  display:grid;
+  grid-template-columns:32px minmax(0,1fr) 32px;
+  column-gap:8px;
+  align-items:start;
+  margin:0 0 8px;
+  padding:var(--spacing,10px) 8px;
+  border:1px solid color-mix(in srgb,var(--line) 50%,transparent);
+  border-radius:10px;
+  background:var(--card);
+  content-visibility:auto;
+  contain-intrinsic-size:auto 72px;
+  transition:border-color .16s ease,background-color .16s ease;
+}
+.compact-card:hover{border-color:var(--line);background:color-mix(in srgb,var(--hover) 24%,var(--card))}
+.compact-card .card-title{
+  display:-webkit-box;
+  min-width:0;
+  padding-top:3px;
+  font-size:var(--title-size,15px);
+  font-weight:500;
+  line-height:1.5;
+  overflow-wrap:anywhere;
+  word-break:normal;
+  color:var(--fg);
+}
+.compact-card .card-title:hover{color:var(--fg);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}
+.compact-card .card-title.full{display:block}
+.card-side{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0}
+.compact-card .card-side button{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:28px;height:28px;min-height:28px;
+  padding:0;
+  border:1px solid transparent;
+  border-radius:8px;
+  background:transparent;
+  color:var(--muted);
+  font-weight:500;
+  cursor:pointer;
+  transition:background-color .14s,color .14s,border-color .14s;
+}
+.compact-card .card-side button:hover{
+  background:var(--hover);
+  color:var(--fg);
+}
+.compact-card .star{font-size:19px;line-height:1}
+.compact-card .star[aria-pressed=true]{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.compact-card .post-age{
+  max-width:32px;
+  font-size:10px;
+  font-weight:400;
+  line-height:1.25;
+  color:var(--muted);
+  text-align:center;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:clip;
+  cursor:help;
+}
+.compact-card .more{font-size:21px;line-height:1}
+.compact-card .reload-title{font-size:20px;line-height:1}
+.compact-card .reload-title:active{transform:rotate(-25deg)}
+.footer{padding:8px 12px;align-items:center;flex-wrap:nowrap}
 .footer button{white-space:nowrap;font-size:11px}
 .folder-row{display:grid;grid-template-columns:minmax(0,1fr) 36px 36px;gap:5px;align-items:center}
 .folder-row>button:first-child{text-align:left;min-width:0;overflow:hidden;text-overflow:ellipsis}
@@ -874,7 +934,6 @@ class ArchiveApp {
     this.dialog('帖子操作',(body,close,submit)=>{
       body.append(element('p',{class:'muted',text:record.customTitle??record.originalTitle}));
       const actions=[
-        ['重新读取标题',()=>this.reloadOneTitle(record)],
         ['编辑',()=>this.editDialog(record)],
         ['复制链接',()=>this.copy(record.url)],
         ['删除收藏',()=>this.deleteDialog(record)]
@@ -1016,8 +1075,12 @@ class ArchiveApp {
       const link=element('a',{class:'card-title'+(this.expanded.has(key)||!this.prefs.lines?' full':''),href:r.url,title,'data-focus':key+':open',text:title});
       const star=element('button',{class:'star',text:r.starred?'★':'☆','aria-label':'切换星标','aria-pressed':String(r.starred),onclick:this.safe(()=>this.store.patch(key,{starred:!this.store.records.get(key)?.starred}))});
       const when=element('span',{class:'post-age',title:r.titleUpdatedAt?'上次确认标题变化：'+new Date(r.titleUpdatedAt).toLocaleString():'尚未读取到标题变化时间',text:shortDate(r.titleUpdatedAt)});
-      const more=element('button',{class:'more',text:'⋯','aria-label':'帖子更多操作',onclick:this.safe(()=>this.cardMenu(r))});
-      frag.append(element('article',{class:'card compact-card'},star,when,link,more));
+      const more=element('button',{class:'more',text:'⋯','aria-label':'帖子更多操作',title:'更多操作','data-focus':key+':more',onclick:this.safe(()=>this.cardMenu(r))});
+      const reload=element('button',{class:'reload-title',text:'↻','aria-label':'重新读取标题',title:'重新读取当前可见的帖子标题','data-focus':key+':reload',onclick:this.safe(()=>this.reloadOneTitle(r))});
+      star.setAttribute('data-focus',key+':star');
+      const starColumn=element('div',{class:'card-side card-side-start'},star,when);
+      const actionColumn=element('div',{class:'card-side card-side-end'},more,reload);
+      frag.append(element('article',{class:'card compact-card'},starColumn,link,actionColumn));
     }
     if(records.length>this.limit)frag.append(element('button',{class:'pager',text:`继续显示（剩余 ${records.length-this.limit} 条）`,onclick:()=>{this.limit+=80;this.renderList();}}));
     this.list.replaceChildren(frag);this.list.scrollTop=oldScroll;
