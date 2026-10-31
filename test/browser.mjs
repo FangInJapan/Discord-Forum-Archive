@@ -24,6 +24,24 @@ try {
   assert.equal(await page.locator('article.card').count(),1);
   await page.getByRole('button',{name:'切换星标',exact:true}).click();
   assert.equal(await page.getByRole('button',{name:'切换星标',exact:true}).getAttribute('aria-pressed'),'true');
+  // Compact-card hierarchy: left stack (star/time), central title, right stack (more/refresh).
+  const card=page.getByRole('region',{name:'收藏列表'}).getByRole('article').first();
+  const starBox=await card.getByRole('button',{name:'切换星标'}).boundingBox();
+  const ageBox=await card.locator('.post-age').boundingBox();
+  const titleBox=await card.locator('.card-title').boundingBox();
+  const moreBox=await card.getByRole('button',{name:'帖子更多操作'}).boundingBox();
+  const reloadBox=await card.getByRole('button',{name:'重新读取标题'}).boundingBox();
+  assert.ok(starBox&&ageBox&&titleBox&&moreBox&&reloadBox,'all compact-card controls exist');
+  assert.ok(ageBox.y>=starBox.y+starBox.height-1,'timestamp must appear below star');
+  assert.ok(reloadBox.y>=moreBox.y+moreBox.height-1,'refresh must appear below ellipsis');
+  assert.ok(titleBox.x>starBox.x&&moreBox.x>titleBox.x,'title occupies central column');
+  await card.getByRole('button',{name:'帖子更多操作'}).click();
+  const actions=page.getByRole('dialog',{name:'帖子操作'});
+  await actions.waitFor();
+  assert.equal(await actions.getByRole('button',{name:'重新读取标题'}).count(),0,'refresh is no longer duplicated in the overflow menu');
+  await page.keyboard.press('Escape');
+  await card.getByRole('button',{name:'重新读取标题'}).click();
+
   await page.getByRole('button',{name:'设置',exact:true}).click();
   await page.getByLabel('实验性：原生关注成功后记录本地收藏').check();await page.getByRole('button',{name:'保存设置',exact:true}).click();
   await page.locator('#thread').click();await page.locator('#follow').click();
@@ -49,6 +67,12 @@ try {
   await page.getByRole('button',{name:'折叠面板',exact:true}).click();await page.getByRole('button',{name:'展开收藏面板',exact:true}).click();
   await page.locator('#theme').click();
   await page.locator('#audit').click();const report=await page.locator('#fixture-log').textContent();assert.ok(!report.includes('FAIL'),report);
-  await mkdir('test-output',{recursive:true});await page.screenshot({path:'test-output/smoke.png'});
+  await mkdir('test-output',{recursive:true});
+  await page.screenshot({path:'test-output/smoke.png'});
+  await page.setViewportSize({width:375,height:812});
+  await page.getByRole('region',{name:'收藏列表'}).getByRole('article').first().waitFor();
+  const compactBounds=await page.getByRole('region',{name:'收藏列表'}).getByRole('article').first().boundingBox();
+  assert.ok(compactBounds&&compactBounds.x>=0&&compactBounds.x+compactBounds.width<=375,'compact cards must remain within a narrow viewport');
+  await page.screenshot({path:'test-output/smoke-narrow.png'});
   assert.deepEqual(errors,[]);console.log(report);console.log('Browser fixture smoke checks passed. Not a live Discord/Tampermonkey test.');
 } finally {await browser?.close();await new Promise(r=>server.close(r));}
