@@ -150,7 +150,7 @@ export class ArchiveApp {
       finally { buttons.forEach(b=>b.disabled=false); }
     });
     this.root.append(overlay); build(content,close,submit,box);
-    queueMicrotask(()=> { (box.querySelector('input,select') || box.querySelector('button') || box).focus(); });
+    queueMicrotask(()=> { ([...box.querySelectorAll('input,select,button')].find(e=>!e.closest('[hidden]')&&!e.disabled) || box).focus(); });
     return {box,content,close};
   }
   async profiles() {
@@ -194,16 +194,16 @@ export class ArchiveApp {
     const old=this.context, oldKey=`${old.guildId}:${old.forumId || old.channelId}`;
     this.scroll.set(oldKey,this.list.scrollTop);
     this.context=c; const key=`${c.guildId}:${c.forumId || c.channelId}`;
-    if(key!==oldKey) {this.force=false;this.query='';this.search.value='';this.limit=80;}
+    if(key!==oldKey) {this.query='';this.search.value='';this.limit=80;}
     this.updateContext();this.renderList();this.layout();this.list.scrollTop=this.scroll.get(key)||0;
     if(c.type==='thread' && this.store) await this.store.observe(c);
   }
   currentFilter() {
-    return this.prefs.filters[this.context.guildId] || {scope:this.prefs.defaultScope,sort:this.prefs.defaultSort};
+    return {...{scope:this.prefs.defaultScope,sort:this.prefs.defaultSort,updates:'all'},...(this.prefs.filters[this.context.guildId]||{})};
   }
   async filterChange() {
     if(!this.profile)return this.chooseProfile();
-    const filters={...this.prefs.filters,[this.context.guildId]:{scope:this.scope.value,sort:this.sort.value}};
+    const filters={...this.prefs.filters,[this.context.guildId]:{scope:this.scope.value,sort:this.sort.value,updates:this.updateToggle.value}};
     await this.savePrefs({filters});this.limit=80;this.renderList();
   }
   updateContext() {
@@ -215,6 +215,10 @@ export class ArchiveApp {
     this.profileEl.textContent=this.profile ? this.profile.name : '';
     this.scope.value=f.scope; this.scope.textContent=f.scope==='forum'?'本频道':'全服务器';
     this.scope.setAttribute('aria-checked',String(f.scope==='server'));
+    this.updateToggle.value=f.updates==='changed'?'changed':'all';
+    this.updateToggle.textContent=f.updates==='changed'?'最近更新':'全部';
+    this.updateToggle.setAttribute('aria-checked',String(f.updates==='changed'));
+    this.updateToggle.title=f.updates==='changed'?'只显示标题发生变化且尚未标记已查看的帖子':'显示全部收藏';
     this.sort.value=f.sort; this.sort.title=this.sort.selectedOptions?.[0]?.textContent||'排序';
     this.collectionButton.textContent=this.selectedFolder().name+' ▾';
     const saved=this.store && c.type==='thread' && this.store.records.has(identity(c));
@@ -309,6 +313,7 @@ export class ArchiveApp {
     this.dialog('帖子操作',(body,close,submit)=>{
       body.append(element('p',{class:'muted',text:record.customTitle??record.originalTitle}));
       const actions=[
+        ...(record.changeUnread?[['标记标题变化为已查看',()=>this.store.patch(identity(record),{changeUnread:false})]]:[]),
         ['编辑',()=>this.editDialog(record)],
         ['复制链接',()=>this.copy(record.url)],
         ['删除收藏',()=>this.deleteDialog(record)]
@@ -351,6 +356,9 @@ export class ArchiveApp {
       this.scope.value=this.scope.value==='forum'?'server':'forum';await this.filterChange();
     })});
     this.scope.value='forum';
+    this.updateToggle=element('button',{class:'update-toggle',role:'switch','aria-label':'全部或最近更新',onclick:this.safe(async()=>{
+      this.updateToggle.value=this.updateToggle.value==='changed'?'all':'changed';await this.filterChange();
+    })});this.updateToggle.value='all';
     this.collectionButton=element('button',{class:'collection-select',title:'选择或管理收藏夹',onclick:this.safe(()=>this.folderDialog())});
     this.sort=element('select',{'aria-label':'排序方式'},...SORTS.map((v,i)=>element('option',{value:v,text:['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A→Z','标题 Z→A','星标优先'][i]})));
     this.sort.addEventListener('change',this.safe(()=>this.filterChange()));
@@ -359,7 +367,7 @@ export class ArchiveApp {
     this.list=element('div',{class:'list',role:'region','aria-label':'收藏列表',tabindex:'0'});
     this.count=element('span',{role:'status'});
     this.panel.append(this.header,this.contextEl,
-      element('div',{class:'tools'},this.search,element('div',{class:'filters'},this.scope,this.collectionButton,sortSlot),this.pageSave),
+      element('div',{class:'tools'},this.search,element('div',{class:'filters'},this.scope,this.updateToggle,this.collectionButton,sortSlot),this.pageSave),
       this.list,element('footer',{class:'footer'},this.count,btn('⟳ 更新可见标题','刷新当前页面可见收藏的标题',()=>this.refreshVisibleTitles(),'refresh-titles')));
     this.tab=btn('关注帖','展开收藏面板',()=>this.setMode('expanded',true),'tab');
     this.tab.addEventListener('mouseenter',()=> {if(this.prefs.hover)this.safe(()=>this.setMode('expanded',true))();});
@@ -379,16 +387,15 @@ export class ArchiveApp {
     if(!this.panel)return;
     const p=this.prefs,c=this.context;
     let mode=p.mode;
-    if(!this.force && mode!=='hidden') {
-      if(c.type==='dm')mode='hidden';
-      else if(c.type!=='forum' && c.type!=='thread')mode='collapsed';
-      else if(!p.autoOpen)mode='collapsed';
-    }
+    // Navigation must never rewrite the user-selected expanded/collapsed state.
+    // Transient unknown routes during Discord SPA transitions are ignored.
+    if(!this.force && c.type==='dm')mode='hidden';
     this.panel.hidden=mode!=='expanded';this.tab.hidden=mode!=='collapsed';
     this.quick.hidden=!(this.profile && c.type==='thread' && mode==='collapsed');
     const rect=geometry(p,{width:innerWidth,height:innerHeight},mode==='collapsed');
     const node=mode==='collapsed'?this.tab:this.panel;
     Object.assign(node.style,{left:`${rect.x}px`,top:`${rect.y}px`,width:`${rect.width}px`,height:`${rect.height}px`});
+    this.host.dataset.glass=p.glass?'on':'off';this.host.dataset.motion=p.motion?'on':'off';
     this.host.style.setProperty('--title-size',`${p.titleSize}px`);this.host.style.setProperty('--ui-size',`${p.uiSize}px`);
     this.host.style.setProperty('--title-lines',String(p.lines || 99999));this.host.style.setProperty('--spacing',({compact:'7px',standard:'10px',relaxed:'15px'})[p.density]);
   }
@@ -437,7 +444,7 @@ export class ArchiveApp {
     const frag=document.createDocumentFragment();let records=[];
     if(this.store && this.context.guildId)records=selectRecords(this.store.records.values(),{...this.context,...this.currentFilter(),collectionId:this.selectedFolder().id,query:this.query});
     this.count.textContent=`${records.length} 条 · 资料库共 ${this.store?.records.size || 0} 条`;
-    if(!records.length)frag.append(element('div',{class:'empty',text:!this.profile?'选择资料库后即可开始收藏。':!this.context.guildId?'请进入服务器查看收藏。':this.query?'没有匹配的收藏。':this.context.forumId?'此筛选下还没有收藏。':'此页未确定父论坛；显示本服务器待归属收藏。可切换“整个服务器”。'}));
+    if(!records.length)frag.append(element('div',{class:'empty',text:!this.profile?'选择资料库后即可开始收藏。':!this.context.guildId?'请进入服务器查看收藏。':this.query?'没有匹配的收藏。':this.currentFilter().updates==='changed'?'目前没有尚未查看的标题变化。':this.context.forumId?'此筛选下还没有收藏。':'此页未确定父论坛；显示本服务器待归属收藏。可切换“整个服务器”。'}));
     const shortDate=v=>{
       if(v==null)return '—';
       const days=Math.max(0,Math.floor((Date.now()-v)/86400000));
@@ -455,7 +462,8 @@ export class ArchiveApp {
       star.setAttribute('data-focus',key+':star');
       const starColumn=element('div',{class:'card-side card-side-start'},star,when);
       const actionColumn=element('div',{class:'card-side card-side-end'},more,reload);
-      frag.append(element('article',{class:'card compact-card'},starColumn,link,actionColumn));
+      if(r.changeUnread){link.title='标题已变化：'+(r.previousSeenTitle||'未知')+' → '+r.originalTitle;}
+      frag.append(element('article',{class:'card compact-card'+(r.changeUnread?' title-changed':''),...(r.changeUnread?{'aria-label':'标题近期发生变化'}:{})},starColumn,link,actionColumn));
     }
     if(records.length>this.limit)frag.append(element('button',{class:'pager',text:`继续显示（剩余 ${records.length-this.limit} 条）`,onclick:()=>{this.limit+=80;this.renderList();}}));
     this.list.replaceChildren(frag);this.list.scrollTop=oldScroll;
@@ -589,43 +597,93 @@ export class ArchiveApp {
     });
   }
   settings() {
-    if(!this.profile)return this.chooseProfile();const p=this.prefs;
-    this.dialog('Forum Archive 设置',(body,close,submit)=> {
+    if(!this.profile)return this.chooseProfile();
+    const p=this.prefs;
+    this.dialog('Forum Archive 设置',(body,close,submit,box)=>{
+      box.classList.add('settings-dialog');
+      body.classList.add('settings-body');
       const controls={};
-      const select=(key,label,options)=> {const el=element('select',{'aria-label':label},...options.map(([value,text])=>element('option',{value,text})));el.value=String(p[key]);controls[key]=el;return element('label',{text:label},el);};
-      const number=(key,label,min,max)=> {const el=element('input',{type:'number',min,max,step:1,value:p[key],'aria-label':label});controls[key]=el;return element('label',{text:label},el);};
-      const sizeSlider=(key,label,min,max)=>{
-        const current=Math.round(100*(p[key]-min)/Math.max(1,max-min));
-        const el=element('input',{type:'range',min:0,max:100,step:1,value:Math.max(0,Math.min(100,current)),'aria-label':label});
-        controls[key]=el;
-        const output=element('output',{text:el.value+'%'});
-        el.addEventListener('input',()=>output.textContent=el.value+'%');
-        return element('label',{class:'slider-setting'},
-          element('span',{},element('span',{text:label}),output),el);
+      const select=(key,label,options)=>{
+        const el=element('select',{'aria-label':label},...options.map(([value,text])=>element('option',{value,text})));
+        el.value=String(p[key]);controls[key]=el;
+        return element('label',{class:'settings-field'},element('span',{text:label}),el);
       };
-      const maxWidth=Math.max(300,Math.min(760,innerWidth-16)),maxHeight=Math.max(240,Math.min(2000,Math.floor(innerHeight*.9)));
-      const check=(key,label)=> {const el=element('input',{type:'checkbox',checked:p[key]});controls[key]=el;return element('label',{class:'check'},el,element('span',{text:label}));};
-      body.append(element('h3',{text:'外观'}),select('theme','主题',[['discord','跟随 Discord'],['dark','强制深色'],['light','强制浅色']]),
-        element('div',{class:'row'},number('titleSize','标题字号（12–22 px）',12,22),number('uiSize','界面字号（11–18 px）',11,18)),
-        select('lines','标题显示行数',[[1,'单行'],[2,'2 行'],[3,'3 行'],[4,'4 行'],[0,'完整显示']]),select('density','列表密度',[['compact','紧凑'],['standard','标准'],['relaxed','宽松']]),
-        element('h3',{text:'布局'}),sizeSlider('width','面板宽度',300,maxWidth),sizeSlider('height','面板高度',240,maxHeight),
-        select('dock','停靠位置',[['none','自由位置'],['left','左侧'],['right','右侧'],['top','顶部'],['bottom','底部']]),check('snap','拖动到距离边缘 24 px 内时吸附'),check('hover','悬停停靠标签时展开（默认关闭）'),check('autoOpen','进入已识别论坛时显示面板（保留手动折叠/隐藏）'),
-        element('button',{text:'重置位置与尺寸',onclick:submit(async()=>{await this.resetLayout();controls.width.value=Math.round(100*(this.prefs.width-300)/Math.max(1,maxWidth-300));controls.height.value=Math.round(100*(this.prefs.height-240)/Math.max(1,maxHeight-240));controls.dock.value=this.prefs.dock;})}),
-        element('h3',{text:'收藏与识别'}),select('defaultScope','新服务器默认筛选',[['forum','本频道'],['server','整个服务器']]),select('defaultSort','新服务器默认排序',SORTS.map((s,i)=>[s,['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A → Z','标题 Z → A','星标优先'][i]])),
-        check('autoFollow','实验性：原生关注成功后记录本地收藏'),check('debug','控制台输出无标题、ID、链接的调试事件'),
-        element('h3',{text:'关于'}),element('p',{class:'muted',text:'版本 '+VERSION+' · 使用当前页面可见信息识别帖子，原生关注同步为实验性功能。'}),
-        element('button',{class:'primary',text:'保存设置',onclick:submit(async()=>{
-          const patch={};for(const [key,el] of Object.entries(controls)) {
-            if(el.type==='checkbox')patch[key]=el.checked;
-            else if((key==='width'||key==='height')&&el.type==='range'){
-              const low=key==='width'?300:240,high=key==='width'?maxWidth:maxHeight;
-              patch[key]=Math.round(low+(high-low)*Number(el.value)/100);
-            }
-            else if(el.type==='number'||key==='lines'){if(!el.checkValidity())throw new Error(`请检查“${el.getAttribute('aria-label')}”的范围。`);patch[key]=Number(el.value);}
-            else patch[key]=el.value;
-          }
-          await this.savePrefs(patch);this.renderList();close();this.toast('设置已保存。');
-        })}));
+      const number=(key,label,min,max)=>{
+        const el=element('input',{type:'number',min,max,step:1,value:p[key],'aria-label':label});
+        controls[key]=el;return element('label',{class:'settings-field'},element('span',{text:label}),el);
+      };
+      const slider=(key,label,min,max)=>{
+        const fraction=Math.max(0,Math.min(100,Math.round(100*(p[key]-min)/Math.max(1,max-min))));
+        const el=element('input',{type:'range',min:0,max:100,value:fraction,'aria-label':label}),output=element('output',{text:fraction+'%'});
+        controls[key]=el;el.addEventListener('input',()=>output.textContent=el.value+'%');
+        return element('label',{class:'settings-slider'},element('span',{},element('span',{text:label}),output),el);
+      };
+      const check=(key,label)=>{
+        const el=element('input',{type:'checkbox',checked:p[key]});
+        controls[key]=el;return element('label',{class:'settings-check'},el,element('span',{text:label}));
+      };
+      const group=(title,...children)=>element('section',{class:'settings-group'},
+        element('h3',{text:title}),...children);
+      const grid=(...children)=>element('div',{class:'settings-grid'},...children);
+      const maxWidth=Math.max(300,Math.min(760,innerWidth-16));
+      const maxHeight=Math.max(240,Math.min(2000,Math.floor(innerHeight*.9)));
+      const panes={
+        appearance:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'外观'},
+          group('主题与效果',grid(select('theme','配色主题',[['discord','跟随 Discord'],['dark','强制深色'],['light','强制浅色']]),
+            select('density','列表密度',[['compact','紧凑'],['standard','标准'],['relaxed','宽松']])),
+            check('glass','玻璃质感与柔和高光'),check('motion','启用微动效（尊重系统减少动画设置）')),
+          group('字体与标题',grid(number('titleSize','标题字号（12–22 px）',12,22),number('uiSize','界面字号（11–18 px）',11,18)),
+            select('lines','标题显示行数',[[1,'单行'],[2,'2 行'],[3,'3 行'],[4,'4 行'],[0,'完整显示']]))),
+        layout:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'布局'},
+          group('尺寸与位置',slider('width','面板宽度',300,maxWidth),slider('height','面板高度',240,maxHeight),
+            select('dock','停靠位置',[['none','自由位置'],['left','左侧'],['right','右侧'],['top','顶部'],['bottom','底部']])),
+          group('停靠交互',check('snap','靠近边缘时吸附'),check('hover','悬停标签时展开'),
+            element('button',{text:'重置面板位置与尺寸',onclick:submit(async()=>{
+              await this.resetLayout();for(const [key,low,high] of [['width',300,maxWidth],['height',240,maxHeight]]){
+                controls[key].value=Math.round(100*(this.prefs[key]-low)/Math.max(1,high-low));
+                controls[key].dispatchEvent(new Event('input'));
+              }controls.dock.value=this.prefs.dock;
+            })}))),
+        bookmarks:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'收藏与识别'},
+          group('收藏默认值',grid(select('defaultScope','新服务器默认范围',[['forum','本频道'],['server','全服务器']]),
+            select('defaultSort','新服务器默认排序',SORTS.map((value,i)=>[value,['最近收藏','最早收藏','最近修改','最早修改','标题 A–Z','标题 Z–A','星标优先'][i]])))),
+          group('识别功能',check('autoFollow','自动记录已确认的原生关注'),
+            check('debug','在控制台记录调试事件'))),
+        about:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'关于'},
+          group('Forum Archive',element('p',{text:'版本 '+VERSION+' · 独立保存 Discord 论坛收藏。'}),
+            element('p',{class:'muted',text:'「最近更新」只显示已确认标题变更、尚未标记已查看的收藏。标题检查只读取当前页面可见内容。'}),
+            element('p',{class:'muted',text:'收藏记录保存在本地资料库。备份、导入与资料库切换可通过 Tampermonkey 菜单操作。'})))
+      };
+      const nav=element('nav',{class:'settings-tabs','aria-label':'设置分类'});
+      const content=element('div',{class:'settings-panes'});
+      const labels=[['appearance','外观'],['layout','布局'],['bookmarks','收藏'],['about','关于']];
+      const tabs=[];
+      const activate=key=>{
+        for(const [id,pane] of Object.entries(panes))pane.hidden=id!==key;
+        for(const [id,button] of tabs)button.setAttribute('aria-selected',String(id===key));
+        content.scrollTop=0;
+      };
+      for(const [id,label] of labels){
+        const b=element('button',{text:label,role:'tab','aria-selected':'false',onclick:()=>activate(id)});
+        tabs.push([id,b]);nav.append(b);content.append(panes[id]);
+      }
+      activate('appearance');
+      const save=element('button',{class:'primary settings-save',text:'保存设置',onclick:submit(async()=>{
+        const patch={};
+        for(const [key,el] of Object.entries(controls)){
+          if(el.type==='checkbox')patch[key]=el.checked;
+          else if((key==='width'||key==='height')&&el.type==='range'){
+            const low=key==='width'?300:240,high=key==='width'?maxWidth:maxHeight;
+            patch[key]=Math.round(low+(high-low)*Number(el.value)/100);
+          } else if(el.type==='number'||key==='lines'){
+            if(!el.checkValidity())throw new Error('请检查“'+el.getAttribute('aria-label')+'”的范围。');
+            patch[key]=Number(el.value);
+          } else patch[key]=el.value;
+        }
+        await this.savePrefs(patch);this.renderList();close();this.toast('设置已保存。');
+      })});
+      const footer=element('footer',{class:'settings-actions'},element('button',{text:'取消',onclick:close}),save);
+      body.append(nav,content,footer);
     });
   }
   applyTheme() {

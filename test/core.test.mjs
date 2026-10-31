@@ -130,3 +130,39 @@ test('legacy bookmarks enter default folder; folder aliases and backup survive r
   assert.equal(copy.forumAliases[G+':'+F],'自定义论坛');
   assert.throws(()=>validateRecord({...migrated,collectionId:'invalid folder id'}));
 });
+
+test('title difference is observed, not inferred from first capture or placeholder',async()=>{
+  const mem=new Memory(),store=new ArchiveStore(mem,'profile-changes');
+  await store.add(record());
+  const key=G+':'+T,initial=store.records.get(key);
+  assert.equal(initial.changeUnread,false);
+  assert.equal(initial.titleChangedAt,null);
+  await store.observe({guildId:G,threadId:T,originalTitle:initial.originalTitle});
+  assert.equal(store.records.get(key).changeUnread,false);
+  await store.observe({guildId:G,threadId:T,originalTitle:'标题新版'});
+  let updated=store.records.get(key);
+  assert.equal(updated.previousSeenTitle,initial.originalTitle);
+  assert.equal(updated.originalTitle,'标题新版');
+  assert.equal(updated.changeUnread,true);
+  assert.ok(updated.titleChangedAt>0);
+  assert.deepEqual(selectRecords(store.records.values(),{guildId:G,scope:'server',updates:'changed'}).map(identity),[key]);
+  await store.patch(key,{changeUnread:false});
+  assert.equal(selectRecords(store.records.values(),{guildId:G,scope:'server',updates:'changed'}).length,0);
+  await store.observe({guildId:G,threadId:T,originalTitle:'再次更名'});
+  updated=store.records.get(key);
+  assert.equal(updated.previousSeenTitle,'标题新版');
+  assert.equal(updated.changeUnread,true);
+  const parsed=parseImport(JSON.stringify(exportData(store.records.values(),{id:'test',name:'测'})));
+  assert.equal(parsed.records[0].previousSeenTitle,'标题新版');
+  assert.equal(parsed.records[0].changeUnread,true);
+});
+test('older archives safely migrate without generating false title changes',async()=>{
+  const old={...record()};delete old.titleChangedAt;delete old.previousSeenTitle;delete old.changeUnread;
+  const migrated=validateRecord(old);
+  assert.equal(migrated.changeUnread,false);assert.equal(migrated.previousSeenTitle,null);assert.equal(migrated.titleChangedAt,null);
+  const p=cleanPrefs({filters:{[G]:{scope:'forum',sort:'saved-desc'}}});
+  assert.equal(p.filters[G].updates,'all');
+  assert.equal(cleanPrefs({filters:{[G]:{scope:'server',sort:'saved-asc',updates:'changed'}}}).filters[G].updates,'changed');
+  const mem=new Memory(),store=new ArchiveStore(mem,'profile-old');await store.add(migrated);
+  assert.equal(selectRecords(store.records.values(),{guildId:G,scope:'server',updates:'changed'}).length,0);
+});

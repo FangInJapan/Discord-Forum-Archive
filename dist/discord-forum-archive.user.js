@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Forum Archive
 // @namespace    https://github.com/FangInJapan/Discord-Forum-Archive
-// @version      1.1.2
+// @version      1.2.0
 // @description  独立保存 Discord 论坛帖子收藏；支持分类、长标题、备份和可调面板。
 // @author       FangInJapan
 // @match        https://discord.com/channels/*
@@ -26,7 +26,7 @@
 
 // ---- core.js ----
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-const VERSION = '1.1.2';
+const VERSION = '1.2.0';
 const SCHEMA = 1;
 const PREFIX = 'dfa:v1:';
 const ID = /^[0-9]{16,22}$/;
@@ -35,7 +35,7 @@ const SOURCES = ['manual-page', 'manual-link', 'native-follow', 'import'];
 const SORTS = ['saved-desc', 'saved-asc', 'modified-desc', 'modified-asc', 'title-asc', 'title-desc', 'starred'];
 const DEFAULTS = Object.freeze({
   theme: 'discord', titleSize: 15, uiSize: 13, lines: 4, density: 'standard',
-  snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true,
+  snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true, glass: true, motion: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
   width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {},
   folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}
@@ -78,7 +78,10 @@ function validateRecord(raw) {
     modifiedAt: time(raw.modifiedAt, '修改'), lastObservedAt: raw.lastObservedAt === null ? null : time(raw.lastObservedAt, '观察'),
     source: raw.source, starred: raw.starred, nativeFollowState: raw.nativeFollowState,
     collectionId: raw.collectionId ?? 'default',
-    titleUpdatedAt: raw.titleUpdatedAt == null ? null : time(raw.titleUpdatedAt,'标题更新时间')
+    titleUpdatedAt: raw.titleUpdatedAt == null ? null : time(raw.titleUpdatedAt,'标题更新时间'),
+    previousSeenTitle: raw.previousSeenTitle == null ? null : string(raw.previousSeenTitle,'上一次帖子标题'),
+    titleChangedAt: raw.titleChangedAt == null ? null : time(raw.titleChangedAt,'标题变化时间'),
+    changeUnread: raw.changeUnread === undefined ? false : (typeof raw.changeUnread === 'boolean' ? raw.changeUnread : (()=>{throw new Error('标题变更状态不合法。');})())
   };
 }
 function makeRecord(info, source = 'manual-link', now = Date.now()) {
@@ -87,19 +90,19 @@ function makeRecord(info, source = 'manual-link', now = Date.now()) {
     originalTitle: info.originalTitle || `帖子 ${info.threadId}`, customTitle: null,
     savedAt: now, modifiedAt: now, lastObservedAt: source === 'manual-page' || source === 'native-follow' ? now : null,
     source, starred: false, nativeFollowState: source === 'native-follow' ? 'following' : 'unknown',
-    collectionId: info.collectionId || 'default', titleUpdatedAt: info.originalTitle ? now : null });
+    collectionId: info.collectionId || 'default', titleUpdatedAt: info.originalTitle ? now : null, previousSeenTitle:null, titleChangedAt:null, changeUnread:false });
 }
 function validatePatch(raw) {
-  const allowed = ['forumId', 'forumName', 'guildName', 'originalTitle', 'customTitle', 'starred', 'lastObservedAt', 'nativeFollowState','collectionId','titleUpdatedAt'];
+  const allowed = ['forumId', 'forumName', 'guildName', 'originalTitle', 'customTitle', 'starred', 'lastObservedAt', 'nativeFollowState','collectionId','titleUpdatedAt','previousSeenTitle','titleChangedAt','changeUnread'];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(k => !allowed.includes(k))) throw new Error('修改字段不合法。');
   const out = {};
   for (const [k,v] of Object.entries(raw)) {
     if (k === 'forumId') { if (v !== null && (typeof v !== 'string' || !ID.test(v))) throw new Error('父频道 ID 不合法。'); }
-    else if (k === 'starred') { if (typeof v !== 'boolean') throw new Error('星标格式错误。'); }
-    else if (k === 'lastObservedAt' || k === 'titleUpdatedAt') { if (v !== null) time(v, k); }
+    else if (k === 'starred' || k === 'changeUnread') { if (typeof v !== 'boolean') throw new Error('布尔值字段格式错误。'); }
+    else if (k === 'lastObservedAt' || k === 'titleUpdatedAt' || k === 'titleChangedAt') { if (v !== null) time(v, k); }
     else if (k === 'collectionId') { if(typeof v !== 'string' || !FOLDER_ID.test(v)) throw new Error('收藏夹 ID 不合法。'); }
     else if (k === 'nativeFollowState') { if (!['unknown', 'following'].includes(v)) throw new Error('状态格式错误。'); }
-    else if (!(k === 'customTitle' && v === null)) string(v, k, k.endsWith('Name') ? 500 : 20000);
+    else if (!(k === 'customTitle' && v === null) && !(k === 'previousSeenTitle' && v===null)) string(v, k, k.endsWith('Name') ? 500 : 20000);
     out[k] = v;
   }
   return out;
@@ -179,7 +182,16 @@ class ArchiveStore {
     await this.refresh(); const r = this.records.get(identity(info));
     if (!r) return null;
     const patch = {};
-    if (info.originalTitle && info.originalTitle !== r.originalTitle) { patch.originalTitle = info.originalTitle; patch.titleUpdatedAt = Date.now(); }
+    if (info.originalTitle && info.originalTitle !== r.originalTitle) {
+      const now=Date.now();
+      patch.originalTitle = info.originalTitle; patch.titleUpdatedAt = now;
+      // Placeholder titles are not proof of an actual Discord title change.
+      if (r.originalTitle && r.originalTitle !== `帖子 ${r.threadId}`) {
+        patch.previousSeenTitle = r.originalTitle;
+        patch.titleChangedAt = now;
+        patch.changeUnread = true;
+      }
+    }
     if (!r.forumId && info.forumId) { patch.forumId = info.forumId; patch.forumName = info.forumName || ''; }
     if (!r.guildName && info.guildName) patch.guildName = info.guildName;
     if (followed && r.nativeFollowState !== 'following') patch.nativeFollowState = 'following';
@@ -187,10 +199,11 @@ class ArchiveStore {
     patch.lastObservedAt = Date.now(); return this.patch(identity(r),patch);
   }
 }
-function selectRecords(records, { guildId, forumId, scope = 'forum', collectionId = null, query = '', sort = 'saved-desc' }) {
+function selectRecords(records, { guildId, forumId, scope = 'forum', collectionId = null, updates = 'all', query = '', sort = 'saved-desc' }) {
   const q = query.normalize('NFKC').toLocaleLowerCase();
   const result = [...records].filter(r => r.guildId === guildId && (scope === 'server' || r.forumId === (forumId ?? null)) &&
     (collectionId === null || (r.collectionId || 'default') === collectionId) &&
+    (updates !== 'changed' || r.changeUnread === true) &&
     [r.customTitle || '',r.originalTitle,r.forumName].some(s => s.normalize('NFKC').toLocaleLowerCase().includes(q)));
   const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
   result.sort((a,b) => {
@@ -230,7 +243,7 @@ async function mergeImport(store, records, policy = 'preserve') {
     await store.refresh(); const old = store.records.get(identity(r));
     if (!old) { await store.add(r); added++; }
     else if (policy === 'incoming') {
-      await store.patch(identity(r),{ customTitle:r.customTitle, starred:r.starred, forumId:r.forumId, forumName:r.forumName, guildName:r.guildName, originalTitle:r.originalTitle, collectionId:r.collectionId, titleUpdatedAt:r.titleUpdatedAt }); updated++;
+      await store.patch(identity(r),{ customTitle:r.customTitle, starred:r.starred, forumId:r.forumId, forumName:r.forumName, guildName:r.guildName, originalTitle:r.originalTitle, collectionId:r.collectionId, titleUpdatedAt:r.titleUpdatedAt,previousSeenTitle:r.previousSeenTitle,titleChangedAt:r.titleChangedAt,changeUnread:r.changeUnread }); updated++;
     }
   }
   return {added,updated};
@@ -261,11 +274,11 @@ function cleanPrefs(raw) {
   const p = { ...DEFAULTS };
   if (!raw || typeof raw !== 'object') return p;
   for (const [k,opts] of Object.entries({theme:['discord','dark','light'],density:['compact','standard','relaxed'],mode:['expanded','collapsed','hidden'],dock:['none','left','right','top','bottom'],defaultScope:['forum','server'],defaultSort:SORTS})) if (opts.includes(raw[k])) p[k] = raw[k];
-  for (const k of ['snap','hover','autoFollow','debug','autoOpen']) if (typeof raw[k] === 'boolean') p[k] = raw[k];
+  for (const k of ['snap','hover','autoFollow','debug','autoOpen','glass','motion']) if (typeof raw[k] === 'boolean') p[k] = raw[k];
   for (const [k,min,max] of [['titleSize',12,22],['uiSize',11,18],['width',300,760],['height',240,2000],['x',0,1],['y',0,1]]) if (typeof raw[k] === 'number' && Number.isFinite(raw[k])) p[k] = Math.max(min,Math.min(max,raw[k]));
   if ([0,1,2,3,4].includes(raw.lines)) p.lines = raw.lines;
   p.filters = {};
-  if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:f.scope,sort:f.sort};
+  if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:f.scope,sort:f.sort,updates:f.updates==='changed'?'changed':'all'};
   p.folders=validateFolders(raw.folders);
   p.folderSelections={};
   if(raw.folderSelections&&typeof raw.folderSelections==='object')for(const [guild,id] of Object.entries(raw.folderSelections)) {
@@ -622,7 +635,150 @@ input[type=range]{accent-color:var(--accent)}
 .scope-toggle[aria-checked=true]::before{background:#50b779}
 .scope-toggle[aria-checked=true]::after{transform:translateX(9px)}
 
-@media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}`;
+
+/* V1.2 design tokens: retain Discord-derived colors, distinguish structure before effects. */
+:host{
+  --glass-border:color-mix(in srgb,var(--line) 56%,transparent);
+  --glass-glint:color-mix(in srgb,var(--fg) 13%,transparent);
+  --glass-shadow:0 18px 55px #0005, inset 0 1px 0 var(--glass-glint);
+  --ease-glass:cubic-bezier(.22,1,.36,1);
+}
+.filters{
+  grid-template-columns:minmax(68px,.96fr) minmax(68px,1fr) minmax(70px,1.28fr) 32px;
+  gap:6px;
+}
+.filters .scope-toggle,.filters .update-toggle{
+  min-width:0;min-height:32px;overflow:hidden;
+  padding:5px 5px 5px 27px;white-space:nowrap;
+  border:1px solid var(--glass-border);border-radius:18px;
+  font-size:11px;font-weight:500;line-height:20px;
+}
+.filters .update-toggle{
+  position:relative;display:flex;align-items:center;justify-content:flex-start;
+  color:var(--muted);background:var(--card);
+}
+.filters .update-toggle[aria-checked="true"]{color:var(--fg)}
+.filters .update-toggle::before,.filters .scope-toggle::before{
+  content:'';position:absolute;left:5px;top:9px;width:21px;height:12px;
+  margin:0;border-radius:99px;background:var(--muted);opacity:.7;
+  transition:background-color .2s var(--ease-glass);
+}
+.filters .update-toggle::after,.filters .scope-toggle::after{
+  content:'';position:absolute;left:7px;top:11px;width:8px;height:8px;
+  border-radius:99px;background:var(--fg);
+  transition:transform .2s var(--ease-glass);
+}
+.filters .update-toggle[aria-checked="true"]::before{background:var(--accent);opacity:1}
+.filters .update-toggle[aria-checked="true"]::after{transform:translateX(9px);background:var(--on-accent)}
+.filters .scope-toggle[aria-checked="true"]::before{background:var(--accent);opacity:1}
+.filters .scope-toggle[aria-checked="true"]::after{background:var(--on-accent)}
+.filters .collection-select{height:32px;font-size:11px;padding:5px 6px}
+.filters .sort-slot{width:32px;height:32px;border-radius:9px}
+.title-changed{border-left:2px solid var(--accent);background:color-mix(in srgb,var(--accent) 6%,var(--card))}
+.title-changed .card-title::before{content:'•';display:inline;color:var(--accent);padding-right:5px;font-size:15px}
+.settings-dialog{
+  display:flex;flex-direction:column;overflow:hidden;
+  width:min(760px,calc(100vw - 24px));max-height:min(86dvh,800px);
+  padding:0;border-radius:16px;
+}
+.settings-dialog>header{
+  flex:none;padding:18px 22px 12px;margin:0;
+  border-bottom:1px solid var(--glass-border);
+}
+.settings-dialog>header h2{font-size:16px;font-weight:600}
+.settings-body{display:flex!important;flex:1;min-height:0;flex-direction:column;gap:0}
+.settings-tabs{
+  flex:none;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:4px;padding:10px 16px;background:color-mix(in srgb,var(--card) 46%,transparent);
+  border-bottom:1px solid var(--glass-border);
+}
+.settings-tabs button{
+  border:1px solid transparent;background:transparent;border-radius:9px;
+  font-size:13px;font-weight:500;min-height:38px;
+}
+.settings-tabs button[aria-selected="true"]{
+  color:var(--fg);background:var(--card);border-color:var(--glass-border);
+  box-shadow:0 2px 7px #0001;
+}
+.settings-panes{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.settings-pane{display:grid;align-content:start;gap:16px;padding:18px 22px 22px}
+.settings-group{
+  display:grid;gap:12px;min-width:0;
+  background:color-mix(in srgb,var(--card) 64%,transparent);
+  border:1px solid var(--glass-border);border-radius:12px;padding:16px;
+}
+.settings-group h3{margin:0 0 2px;font-size:13px;font-weight:600}
+.settings-group p{margin:0;line-height:1.7}
+.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.settings-field{display:grid;gap:6px;min-width:0;font-size:12px;color:var(--muted);font-weight:500}
+.settings-field input,.settings-field select{
+  min-width:0;width:100%;height:38px;padding:7px 10px;
+  border-radius:9px;color:var(--fg);font-size:13px;
+}
+.settings-check{
+  display:flex!important;align-items:center;gap:10px;
+  min-height:34px;font-size:13px;line-height:1.45;
+}
+.settings-check input{flex:none;width:16px;height:16px;margin:0;accent-color:var(--accent)}
+.settings-slider{display:grid;gap:8px;font-size:13px}
+.settings-slider>span{display:flex;justify-content:space-between;align-items:center;color:var(--muted)}
+.settings-slider output{font-variant-numeric:tabular-nums;color:var(--fg)}
+.settings-slider input{width:100%;accent-color:var(--accent)}
+.settings-actions{
+  display:flex;flex:none;align-items:center;justify-content:flex-end;gap:10px;
+  padding:12px 22px;border-top:1px solid var(--glass-border);
+  background:color-mix(in srgb,var(--bg) 94%,var(--card));
+}
+.settings-actions button{min-width:94px;min-height:38px}
+.settings-save{font-weight:600}
+:host([data-glass="on"]) .panel,
+:host([data-glass="on"]) .dialog,
+:host([data-glass="on"]) .tab{
+  background:linear-gradient(156deg,color-mix(in srgb,var(--fg) 7%,transparent),transparent 34%),
+             color-mix(in srgb,var(--bg) 90%,transparent);
+  border:1px solid var(--glass-border);
+  box-shadow:var(--glass-shadow);
+}
+@supports (backdrop-filter:blur(1px)){
+  :host([data-glass="on"]) .panel,
+  :host([data-glass="on"]) .dialog,
+  :host([data-glass="on"]) .tab{
+    backdrop-filter:blur(20px) saturate(1.22);
+    -webkit-backdrop-filter:blur(20px) saturate(1.22);
+  }
+}
+:host([data-glass="on"]) .compact-card{
+  background:linear-gradient(145deg,color-mix(in srgb,var(--fg) 3%,transparent),transparent 66%),var(--card);
+  border-color:var(--glass-border);
+}
+:host([data-glass="on"]) .compact-card:hover{
+  border-color:color-mix(in srgb,var(--accent) 30%,var(--line));
+  box-shadow:inset 0 1px 0 var(--glass-glint),0 4px 16px #0002;
+}
+:host([data-motion="on"]) .compact-card,
+:host([data-motion="on"]) .icon,
+:host([data-motion="on"]) .page-save,
+:host([data-motion="on"]) .settings-tabs button,
+:host([data-motion="on"]) .update-toggle{
+  transition:border-color 180ms var(--ease-glass),background-color 180ms var(--ease-glass),
+    box-shadow 200ms var(--ease-glass),transform 180ms var(--ease-glass);
+}
+:host([data-motion="on"]) .icon:hover,
+:host([data-motion="on"]) .page-save:hover{transform:translateY(-1px)}
+:host([data-motion="on"]) .icon:active,
+:host([data-motion="on"]) .page-save:active{transform:translateY(0) scale(.98)}
+@media(max-width:550px){
+  .settings-dialog{width:calc(100vw - 16px);max-height:92dvh}
+  .settings-dialog>header{padding:12px 16px}
+  .settings-pane{padding:12px}
+  .settings-group{padding:12px;gap:10px}
+  .settings-grid{grid-template-columns:minmax(0,1fr)}
+  .settings-tabs{padding:8px}
+  .settings-actions{padding:10px 12px}
+}
+:host([data-motion="off"]) *, :host([data-motion="off"]) *::before,:host([data-motion="off"]) *::after{animation:none!important;transition:none!important}
+
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}*::before,*::after{transition:none!important;animation:none!important}}`;
 
 
 // ---- app.js ----
@@ -775,7 +931,7 @@ class ArchiveApp {
       finally { buttons.forEach(b=>b.disabled=false); }
     });
     this.root.append(overlay); build(content,close,submit,box);
-    queueMicrotask(()=> { (box.querySelector('input,select') || box.querySelector('button') || box).focus(); });
+    queueMicrotask(()=> { ([...box.querySelectorAll('input,select,button')].find(e=>!e.closest('[hidden]')&&!e.disabled) || box).focus(); });
     return {box,content,close};
   }
   async profiles() {
@@ -819,16 +975,16 @@ class ArchiveApp {
     const old=this.context, oldKey=`${old.guildId}:${old.forumId || old.channelId}`;
     this.scroll.set(oldKey,this.list.scrollTop);
     this.context=c; const key=`${c.guildId}:${c.forumId || c.channelId}`;
-    if(key!==oldKey) {this.force=false;this.query='';this.search.value='';this.limit=80;}
+    if(key!==oldKey) {this.query='';this.search.value='';this.limit=80;}
     this.updateContext();this.renderList();this.layout();this.list.scrollTop=this.scroll.get(key)||0;
     if(c.type==='thread' && this.store) await this.store.observe(c);
   }
   currentFilter() {
-    return this.prefs.filters[this.context.guildId] || {scope:this.prefs.defaultScope,sort:this.prefs.defaultSort};
+    return {...{scope:this.prefs.defaultScope,sort:this.prefs.defaultSort,updates:'all'},...(this.prefs.filters[this.context.guildId]||{})};
   }
   async filterChange() {
     if(!this.profile)return this.chooseProfile();
-    const filters={...this.prefs.filters,[this.context.guildId]:{scope:this.scope.value,sort:this.sort.value}};
+    const filters={...this.prefs.filters,[this.context.guildId]:{scope:this.scope.value,sort:this.sort.value,updates:this.updateToggle.value}};
     await this.savePrefs({filters});this.limit=80;this.renderList();
   }
   updateContext() {
@@ -840,6 +996,10 @@ class ArchiveApp {
     this.profileEl.textContent=this.profile ? this.profile.name : '';
     this.scope.value=f.scope; this.scope.textContent=f.scope==='forum'?'本频道':'全服务器';
     this.scope.setAttribute('aria-checked',String(f.scope==='server'));
+    this.updateToggle.value=f.updates==='changed'?'changed':'all';
+    this.updateToggle.textContent=f.updates==='changed'?'最近更新':'全部';
+    this.updateToggle.setAttribute('aria-checked',String(f.updates==='changed'));
+    this.updateToggle.title=f.updates==='changed'?'只显示标题发生变化且尚未标记已查看的帖子':'显示全部收藏';
     this.sort.value=f.sort; this.sort.title=this.sort.selectedOptions?.[0]?.textContent||'排序';
     this.collectionButton.textContent=this.selectedFolder().name+' ▾';
     const saved=this.store && c.type==='thread' && this.store.records.has(identity(c));
@@ -934,6 +1094,7 @@ class ArchiveApp {
     this.dialog('帖子操作',(body,close,submit)=>{
       body.append(element('p',{class:'muted',text:record.customTitle??record.originalTitle}));
       const actions=[
+        ...(record.changeUnread?[['标记标题变化为已查看',()=>this.store.patch(identity(record),{changeUnread:false})]]:[]),
         ['编辑',()=>this.editDialog(record)],
         ['复制链接',()=>this.copy(record.url)],
         ['删除收藏',()=>this.deleteDialog(record)]
@@ -976,6 +1137,9 @@ class ArchiveApp {
       this.scope.value=this.scope.value==='forum'?'server':'forum';await this.filterChange();
     })});
     this.scope.value='forum';
+    this.updateToggle=element('button',{class:'update-toggle',role:'switch','aria-label':'全部或最近更新',onclick:this.safe(async()=>{
+      this.updateToggle.value=this.updateToggle.value==='changed'?'all':'changed';await this.filterChange();
+    })});this.updateToggle.value='all';
     this.collectionButton=element('button',{class:'collection-select',title:'选择或管理收藏夹',onclick:this.safe(()=>this.folderDialog())});
     this.sort=element('select',{'aria-label':'排序方式'},...SORTS.map((v,i)=>element('option',{value:v,text:['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A→Z','标题 Z→A','星标优先'][i]})));
     this.sort.addEventListener('change',this.safe(()=>this.filterChange()));
@@ -984,7 +1148,7 @@ class ArchiveApp {
     this.list=element('div',{class:'list',role:'region','aria-label':'收藏列表',tabindex:'0'});
     this.count=element('span',{role:'status'});
     this.panel.append(this.header,this.contextEl,
-      element('div',{class:'tools'},this.search,element('div',{class:'filters'},this.scope,this.collectionButton,sortSlot),this.pageSave),
+      element('div',{class:'tools'},this.search,element('div',{class:'filters'},this.scope,this.updateToggle,this.collectionButton,sortSlot),this.pageSave),
       this.list,element('footer',{class:'footer'},this.count,btn('⟳ 更新可见标题','刷新当前页面可见收藏的标题',()=>this.refreshVisibleTitles(),'refresh-titles')));
     this.tab=btn('关注帖','展开收藏面板',()=>this.setMode('expanded',true),'tab');
     this.tab.addEventListener('mouseenter',()=> {if(this.prefs.hover)this.safe(()=>this.setMode('expanded',true))();});
@@ -1004,16 +1168,15 @@ class ArchiveApp {
     if(!this.panel)return;
     const p=this.prefs,c=this.context;
     let mode=p.mode;
-    if(!this.force && mode!=='hidden') {
-      if(c.type==='dm')mode='hidden';
-      else if(c.type!=='forum' && c.type!=='thread')mode='collapsed';
-      else if(!p.autoOpen)mode='collapsed';
-    }
+    // Navigation must never rewrite the user-selected expanded/collapsed state.
+    // Transient unknown routes during Discord SPA transitions are ignored.
+    if(!this.force && c.type==='dm')mode='hidden';
     this.panel.hidden=mode!=='expanded';this.tab.hidden=mode!=='collapsed';
     this.quick.hidden=!(this.profile && c.type==='thread' && mode==='collapsed');
     const rect=geometry(p,{width:innerWidth,height:innerHeight},mode==='collapsed');
     const node=mode==='collapsed'?this.tab:this.panel;
     Object.assign(node.style,{left:`${rect.x}px`,top:`${rect.y}px`,width:`${rect.width}px`,height:`${rect.height}px`});
+    this.host.dataset.glass=p.glass?'on':'off';this.host.dataset.motion=p.motion?'on':'off';
     this.host.style.setProperty('--title-size',`${p.titleSize}px`);this.host.style.setProperty('--ui-size',`${p.uiSize}px`);
     this.host.style.setProperty('--title-lines',String(p.lines || 99999));this.host.style.setProperty('--spacing',({compact:'7px',standard:'10px',relaxed:'15px'})[p.density]);
   }
@@ -1062,7 +1225,7 @@ class ArchiveApp {
     const frag=document.createDocumentFragment();let records=[];
     if(this.store && this.context.guildId)records=selectRecords(this.store.records.values(),{...this.context,...this.currentFilter(),collectionId:this.selectedFolder().id,query:this.query});
     this.count.textContent=`${records.length} 条 · 资料库共 ${this.store?.records.size || 0} 条`;
-    if(!records.length)frag.append(element('div',{class:'empty',text:!this.profile?'选择资料库后即可开始收藏。':!this.context.guildId?'请进入服务器查看收藏。':this.query?'没有匹配的收藏。':this.context.forumId?'此筛选下还没有收藏。':'此页未确定父论坛；显示本服务器待归属收藏。可切换“整个服务器”。'}));
+    if(!records.length)frag.append(element('div',{class:'empty',text:!this.profile?'选择资料库后即可开始收藏。':!this.context.guildId?'请进入服务器查看收藏。':this.query?'没有匹配的收藏。':this.currentFilter().updates==='changed'?'目前没有尚未查看的标题变化。':this.context.forumId?'此筛选下还没有收藏。':'此页未确定父论坛；显示本服务器待归属收藏。可切换“整个服务器”。'}));
     const shortDate=v=>{
       if(v==null)return '—';
       const days=Math.max(0,Math.floor((Date.now()-v)/86400000));
@@ -1080,7 +1243,8 @@ class ArchiveApp {
       star.setAttribute('data-focus',key+':star');
       const starColumn=element('div',{class:'card-side card-side-start'},star,when);
       const actionColumn=element('div',{class:'card-side card-side-end'},more,reload);
-      frag.append(element('article',{class:'card compact-card'},starColumn,link,actionColumn));
+      if(r.changeUnread){link.title='标题已变化：'+(r.previousSeenTitle||'未知')+' → '+r.originalTitle;}
+      frag.append(element('article',{class:'card compact-card'+(r.changeUnread?' title-changed':''),...(r.changeUnread?{'aria-label':'标题近期发生变化'}:{})},starColumn,link,actionColumn));
     }
     if(records.length>this.limit)frag.append(element('button',{class:'pager',text:`继续显示（剩余 ${records.length-this.limit} 条）`,onclick:()=>{this.limit+=80;this.renderList();}}));
     this.list.replaceChildren(frag);this.list.scrollTop=oldScroll;
@@ -1214,43 +1378,93 @@ class ArchiveApp {
     });
   }
   settings() {
-    if(!this.profile)return this.chooseProfile();const p=this.prefs;
-    this.dialog('Forum Archive 设置',(body,close,submit)=> {
+    if(!this.profile)return this.chooseProfile();
+    const p=this.prefs;
+    this.dialog('Forum Archive 设置',(body,close,submit,box)=>{
+      box.classList.add('settings-dialog');
+      body.classList.add('settings-body');
       const controls={};
-      const select=(key,label,options)=> {const el=element('select',{'aria-label':label},...options.map(([value,text])=>element('option',{value,text})));el.value=String(p[key]);controls[key]=el;return element('label',{text:label},el);};
-      const number=(key,label,min,max)=> {const el=element('input',{type:'number',min,max,step:1,value:p[key],'aria-label':label});controls[key]=el;return element('label',{text:label},el);};
-      const sizeSlider=(key,label,min,max)=>{
-        const current=Math.round(100*(p[key]-min)/Math.max(1,max-min));
-        const el=element('input',{type:'range',min:0,max:100,step:1,value:Math.max(0,Math.min(100,current)),'aria-label':label});
-        controls[key]=el;
-        const output=element('output',{text:el.value+'%'});
-        el.addEventListener('input',()=>output.textContent=el.value+'%');
-        return element('label',{class:'slider-setting'},
-          element('span',{},element('span',{text:label}),output),el);
+      const select=(key,label,options)=>{
+        const el=element('select',{'aria-label':label},...options.map(([value,text])=>element('option',{value,text})));
+        el.value=String(p[key]);controls[key]=el;
+        return element('label',{class:'settings-field'},element('span',{text:label}),el);
       };
-      const maxWidth=Math.max(300,Math.min(760,innerWidth-16)),maxHeight=Math.max(240,Math.min(2000,Math.floor(innerHeight*.9)));
-      const check=(key,label)=> {const el=element('input',{type:'checkbox',checked:p[key]});controls[key]=el;return element('label',{class:'check'},el,element('span',{text:label}));};
-      body.append(element('h3',{text:'外观'}),select('theme','主题',[['discord','跟随 Discord'],['dark','强制深色'],['light','强制浅色']]),
-        element('div',{class:'row'},number('titleSize','标题字号（12–22 px）',12,22),number('uiSize','界面字号（11–18 px）',11,18)),
-        select('lines','标题显示行数',[[1,'单行'],[2,'2 行'],[3,'3 行'],[4,'4 行'],[0,'完整显示']]),select('density','列表密度',[['compact','紧凑'],['standard','标准'],['relaxed','宽松']]),
-        element('h3',{text:'布局'}),sizeSlider('width','面板宽度',300,maxWidth),sizeSlider('height','面板高度',240,maxHeight),
-        select('dock','停靠位置',[['none','自由位置'],['left','左侧'],['right','右侧'],['top','顶部'],['bottom','底部']]),check('snap','拖动到距离边缘 24 px 内时吸附'),check('hover','悬停停靠标签时展开（默认关闭）'),check('autoOpen','进入已识别论坛时显示面板（保留手动折叠/隐藏）'),
-        element('button',{text:'重置位置与尺寸',onclick:submit(async()=>{await this.resetLayout();controls.width.value=Math.round(100*(this.prefs.width-300)/Math.max(1,maxWidth-300));controls.height.value=Math.round(100*(this.prefs.height-240)/Math.max(1,maxHeight-240));controls.dock.value=this.prefs.dock;})}),
-        element('h3',{text:'收藏与识别'}),select('defaultScope','新服务器默认筛选',[['forum','本频道'],['server','整个服务器']]),select('defaultSort','新服务器默认排序',SORTS.map((s,i)=>[s,['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A → Z','标题 Z → A','星标优先'][i]])),
-        check('autoFollow','实验性：原生关注成功后记录本地收藏'),check('debug','控制台输出无标题、ID、链接的调试事件'),
-        element('h3',{text:'关于'}),element('p',{class:'muted',text:'版本 '+VERSION+' · 使用当前页面可见信息识别帖子，原生关注同步为实验性功能。'}),
-        element('button',{class:'primary',text:'保存设置',onclick:submit(async()=>{
-          const patch={};for(const [key,el] of Object.entries(controls)) {
-            if(el.type==='checkbox')patch[key]=el.checked;
-            else if((key==='width'||key==='height')&&el.type==='range'){
-              const low=key==='width'?300:240,high=key==='width'?maxWidth:maxHeight;
-              patch[key]=Math.round(low+(high-low)*Number(el.value)/100);
-            }
-            else if(el.type==='number'||key==='lines'){if(!el.checkValidity())throw new Error(`请检查“${el.getAttribute('aria-label')}”的范围。`);patch[key]=Number(el.value);}
-            else patch[key]=el.value;
-          }
-          await this.savePrefs(patch);this.renderList();close();this.toast('设置已保存。');
-        })}));
+      const number=(key,label,min,max)=>{
+        const el=element('input',{type:'number',min,max,step:1,value:p[key],'aria-label':label});
+        controls[key]=el;return element('label',{class:'settings-field'},element('span',{text:label}),el);
+      };
+      const slider=(key,label,min,max)=>{
+        const fraction=Math.max(0,Math.min(100,Math.round(100*(p[key]-min)/Math.max(1,max-min))));
+        const el=element('input',{type:'range',min:0,max:100,value:fraction,'aria-label':label}),output=element('output',{text:fraction+'%'});
+        controls[key]=el;el.addEventListener('input',()=>output.textContent=el.value+'%');
+        return element('label',{class:'settings-slider'},element('span',{},element('span',{text:label}),output),el);
+      };
+      const check=(key,label)=>{
+        const el=element('input',{type:'checkbox',checked:p[key]});
+        controls[key]=el;return element('label',{class:'settings-check'},el,element('span',{text:label}));
+      };
+      const group=(title,...children)=>element('section',{class:'settings-group'},
+        element('h3',{text:title}),...children);
+      const grid=(...children)=>element('div',{class:'settings-grid'},...children);
+      const maxWidth=Math.max(300,Math.min(760,innerWidth-16));
+      const maxHeight=Math.max(240,Math.min(2000,Math.floor(innerHeight*.9)));
+      const panes={
+        appearance:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'外观'},
+          group('主题与效果',grid(select('theme','配色主题',[['discord','跟随 Discord'],['dark','强制深色'],['light','强制浅色']]),
+            select('density','列表密度',[['compact','紧凑'],['standard','标准'],['relaxed','宽松']])),
+            check('glass','玻璃质感与柔和高光'),check('motion','启用微动效（尊重系统减少动画设置）')),
+          group('字体与标题',grid(number('titleSize','标题字号（12–22 px）',12,22),number('uiSize','界面字号（11–18 px）',11,18)),
+            select('lines','标题显示行数',[[1,'单行'],[2,'2 行'],[3,'3 行'],[4,'4 行'],[0,'完整显示']]))),
+        layout:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'布局'},
+          group('尺寸与位置',slider('width','面板宽度',300,maxWidth),slider('height','面板高度',240,maxHeight),
+            select('dock','停靠位置',[['none','自由位置'],['left','左侧'],['right','右侧'],['top','顶部'],['bottom','底部']])),
+          group('停靠交互',check('snap','靠近边缘时吸附'),check('hover','悬停标签时展开'),
+            element('button',{text:'重置面板位置与尺寸',onclick:submit(async()=>{
+              await this.resetLayout();for(const [key,low,high] of [['width',300,maxWidth],['height',240,maxHeight]]){
+                controls[key].value=Math.round(100*(this.prefs[key]-low)/Math.max(1,high-low));
+                controls[key].dispatchEvent(new Event('input'));
+              }controls.dock.value=this.prefs.dock;
+            })}))),
+        bookmarks:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'收藏与识别'},
+          group('收藏默认值',grid(select('defaultScope','新服务器默认范围',[['forum','本频道'],['server','全服务器']]),
+            select('defaultSort','新服务器默认排序',SORTS.map((value,i)=>[value,['最近收藏','最早收藏','最近修改','最早修改','标题 A–Z','标题 Z–A','星标优先'][i]])))),
+          group('识别功能',check('autoFollow','自动记录已确认的原生关注'),
+            check('debug','在控制台记录调试事件'))),
+        about:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'关于'},
+          group('Forum Archive',element('p',{text:'版本 '+VERSION+' · 独立保存 Discord 论坛收藏。'}),
+            element('p',{class:'muted',text:'「最近更新」只显示已确认标题变更、尚未标记已查看的收藏。标题检查只读取当前页面可见内容。'}),
+            element('p',{class:'muted',text:'收藏记录保存在本地资料库。备份、导入与资料库切换可通过 Tampermonkey 菜单操作。'})))
+      };
+      const nav=element('nav',{class:'settings-tabs','aria-label':'设置分类'});
+      const content=element('div',{class:'settings-panes'});
+      const labels=[['appearance','外观'],['layout','布局'],['bookmarks','收藏'],['about','关于']];
+      const tabs=[];
+      const activate=key=>{
+        for(const [id,pane] of Object.entries(panes))pane.hidden=id!==key;
+        for(const [id,button] of tabs)button.setAttribute('aria-selected',String(id===key));
+        content.scrollTop=0;
+      };
+      for(const [id,label] of labels){
+        const b=element('button',{text:label,role:'tab','aria-selected':'false',onclick:()=>activate(id)});
+        tabs.push([id,b]);nav.append(b);content.append(panes[id]);
+      }
+      activate('appearance');
+      const save=element('button',{class:'primary settings-save',text:'保存设置',onclick:submit(async()=>{
+        const patch={};
+        for(const [key,el] of Object.entries(controls)){
+          if(el.type==='checkbox')patch[key]=el.checked;
+          else if((key==='width'||key==='height')&&el.type==='range'){
+            const low=key==='width'?300:240,high=key==='width'?maxWidth:maxHeight;
+            patch[key]=Math.round(low+(high-low)*Number(el.value)/100);
+          } else if(el.type==='number'||key==='lines'){
+            if(!el.checkValidity())throw new Error('请检查“'+el.getAttribute('aria-label')+'”的范围。');
+            patch[key]=Number(el.value);
+          } else patch[key]=el.value;
+        }
+        await this.savePrefs(patch);this.renderList();close();this.toast('设置已保存。');
+      })});
+      const footer=element('footer',{class:'settings-actions'},element('button',{text:'取消',onclick:close}),save);
+      body.append(nav,content,footer);
     });
   }
   applyTheme() {
