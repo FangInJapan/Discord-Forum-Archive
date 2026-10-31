@@ -1,15 +1,17 @@
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-export const VERSION = '1.0.1';
+export const VERSION = '1.1.0';
 export const SCHEMA = 1;
 export const PREFIX = 'dfa:v1:';
 export const ID = /^[0-9]{16,22}$/;
+export const FOLDER_ID = /^(?:default|[\w-]{8,100})$/;
 export const SOURCES = ['manual-page', 'manual-link', 'native-follow', 'import'];
 export const SORTS = ['saved-desc', 'saved-asc', 'modified-desc', 'modified-asc', 'title-asc', 'title-desc', 'starred'];
 export const DEFAULTS = Object.freeze({
   theme: 'discord', titleSize: 15, uiSize: 13, lines: 4, density: 'standard',
   snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
-  width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {}
+  width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {},
+  folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}
 });
 export function uid() { return crypto.randomUUID(); }
 export function canonical(guildId, threadId) { return `https://discord.com/channels/${guildId}/${threadId}`; }
@@ -46,7 +48,9 @@ export function validateRecord(raw) {
     customTitle: raw.customTitle === null ? null : string(raw.customTitle, '自定义标题'),
     url: canonical(raw.guildId, raw.threadId), savedAt: time(raw.savedAt, '收藏'),
     modifiedAt: time(raw.modifiedAt, '修改'), lastObservedAt: raw.lastObservedAt === null ? null : time(raw.lastObservedAt, '观察'),
-    source: raw.source, starred: raw.starred, nativeFollowState: raw.nativeFollowState
+    source: raw.source, starred: raw.starred, nativeFollowState: raw.nativeFollowState,
+    collectionId: FOLDER_ID.test(raw.collectionId ?? 'default') ? (raw.collectionId ?? 'default') : 'default',
+    titleUpdatedAt: raw.titleUpdatedAt == null ? null : time(raw.titleUpdatedAt,'标题更新时间')
   };
 }
 export function makeRecord(info, source = 'manual-link', now = Date.now()) {
@@ -54,16 +58,18 @@ export function makeRecord(info, source = 'manual-link', now = Date.now()) {
     forumId: info.forumId || null, guildName: info.guildName || '', forumName: info.forumName || '',
     originalTitle: info.originalTitle || `帖子 ${info.threadId}`, customTitle: null,
     savedAt: now, modifiedAt: now, lastObservedAt: source === 'manual-page' || source === 'native-follow' ? now : null,
-    source, starred: false, nativeFollowState: source === 'native-follow' ? 'following' : 'unknown' });
+    source, starred: false, nativeFollowState: source === 'native-follow' ? 'following' : 'unknown',
+    collectionId: info.collectionId || 'default', titleUpdatedAt: info.originalTitle ? now : null });
 }
 export function validatePatch(raw) {
-  const allowed = ['forumId', 'forumName', 'guildName', 'originalTitle', 'customTitle', 'starred', 'lastObservedAt', 'nativeFollowState'];
+  const allowed = ['forumId', 'forumName', 'guildName', 'originalTitle', 'customTitle', 'starred', 'lastObservedAt', 'nativeFollowState','collectionId','titleUpdatedAt'];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).some(k => !allowed.includes(k))) throw new Error('修改字段不合法。');
   const out = {};
   for (const [k,v] of Object.entries(raw)) {
     if (k === 'forumId') { if (v !== null && (typeof v !== 'string' || !ID.test(v))) throw new Error('父频道 ID 不合法。'); }
     else if (k === 'starred') { if (typeof v !== 'boolean') throw new Error('星标格式错误。'); }
-    else if (k === 'lastObservedAt') { if (v !== null) time(v, k); }
+    else if (k === 'lastObservedAt' || k === 'titleUpdatedAt') { if (v !== null) time(v, k); }
+    else if (k === 'collectionId') { if(typeof v !== 'string' || !FOLDER_ID.test(v)) throw new Error('收藏夹 ID 不合法。'); }
     else if (k === 'nativeFollowState') { if (!['unknown', 'following'].includes(v)) throw new Error('状态格式错误。'); }
     else if (!(k === 'customTitle' && v === null)) string(v, k, k.endsWith('Name') ? 500 : 20000);
     out[k] = v;
@@ -145,7 +151,7 @@ export class ArchiveStore {
     await this.refresh(); const r = this.records.get(identity(info));
     if (!r) return null;
     const patch = {};
-    if (info.originalTitle && info.originalTitle !== r.originalTitle) patch.originalTitle = info.originalTitle;
+    if (info.originalTitle && info.originalTitle !== r.originalTitle) { patch.originalTitle = info.originalTitle; patch.titleUpdatedAt = Date.now(); }
     if (!r.forumId && info.forumId) { patch.forumId = info.forumId; patch.forumName = info.forumName || ''; }
     if (!r.guildName && info.guildName) patch.guildName = info.guildName;
     if (followed && r.nativeFollowState !== 'following') patch.nativeFollowState = 'following';
@@ -153,11 +159,12 @@ export class ArchiveStore {
     patch.lastObservedAt = Date.now(); return this.patch(identity(r),patch);
   }
 }
-export function selectRecords(records, { guildId, forumId, scope = 'forum', query = '', sort = 'saved-desc' }) {
+export function selectRecords(records, { guildId, forumId, scope = 'forum', collectionId = null, query = '', sort = 'saved-desc' }) {
   const q = query.normalize('NFKC').toLocaleLowerCase();
   const result = [...records].filter(r => r.guildId === guildId && (scope === 'server' || r.forumId === (forumId ?? null)) &&
+    (collectionId === null || (r.collectionId || 'default') === collectionId) &&
     [r.customTitle || '',r.originalTitle,r.forumName].some(s => s.normalize('NFKC').toLocaleLowerCase().includes(q)));
-  const collator = new Intl.Collator(['zh-CN','ja','en'], { numeric: true, sensitivity: 'base' });
+  const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
   result.sort((a,b) => {
     const title = () => collator.compare(a.customTitle ?? a.originalTitle, b.customTitle ?? b.originalTitle);
     let delta = 0;
@@ -171,11 +178,11 @@ export function selectRecords(records, { guildId, forumId, scope = 'forum', quer
     return delta || identity(a).localeCompare(identity(b));
   }); return result;
 }
-export function exportData(records, profile) {
+export function exportData(records, profile, prefs = null) {
   const posts = [...records].map(validateRecord);
   const servers = [...new Map(posts.map(r => [r.guildId,{ guildId:r.guildId,name:r.guildName }])).values()];
   const forums = [...new Map(posts.filter(r=>r.forumId).map(r => [`${r.guildId}:${r.forumId}`,{guildId:r.guildId,forumId:r.forumId,name:r.forumName}])).values()];
-  return { format:'discord-forum-archive', schemaVersion:SCHEMA, exportedAt:Date.now(), profile:{id:profile.id,name:profile.name}, servers, forums, records:posts };
+  return { format:'discord-forum-archive', schemaVersion:SCHEMA, exportedAt:Date.now(), profile:{id:profile.id,name:profile.name}, servers, forums, records:posts, folders:prefs?.folders || [{id:'default',name:'默认收藏夹'}], guildAliases:prefs?.guildAliases || {}, forumAliases:prefs?.forumAliases || {} };
 }
 export function parseImport(text) {
   if (typeof text !== 'string' || new TextEncoder().encode(text).length > 10*1024*1024) throw new Error('JSON 最大为 10 MiB。');
@@ -183,7 +190,8 @@ export function parseImport(text) {
   if (!data || data.format !== 'discord-forum-archive' || data.schemaVersion !== SCHEMA || !Array.isArray(data.records) || data.records.length > 10000) throw new Error('格式/版本不支持，或记录超过 10,000 条。');
   const records = new Map();
   for (const raw of data.records) { const r = validateRecord(raw); if (!records.has(identity(r))) records.set(identity(r),r); }
-  return { records:[...records.values()], duplicates:data.records.length-records.size, profileName: typeof data.profile?.name === 'string' ? data.profile.name.slice(0,100) : '未命名' };
+  return { records:[...records.values()], duplicates:data.records.length-records.size, profileName: typeof data.profile?.name === 'string' ? data.profile.name.slice(0,100) : '未命名',
+    folders:validateFolders(data.folders), guildAliases:validateAliases(data.guildAliases,false),forumAliases:validateAliases(data.forumAliases,true) };
 }
 export async function mergeImport(store, records, policy = 'preserve') {
   let added = 0, updated = 0;
@@ -194,10 +202,31 @@ export async function mergeImport(store, records, policy = 'preserve') {
     await store.refresh(); const old = store.records.get(identity(r));
     if (!old) { await store.add(r); added++; }
     else if (policy === 'incoming') {
-      await store.patch(identity(r),{ customTitle:r.customTitle, starred:r.starred, forumId:r.forumId, forumName:r.forumName, guildName:r.guildName, originalTitle:r.originalTitle }); updated++;
+      await store.patch(identity(r),{ customTitle:r.customTitle, starred:r.starred, forumId:r.forumId, forumName:r.forumName, guildName:r.guildName, originalTitle:r.originalTitle, collectionId:r.collectionId, titleUpdatedAt:r.titleUpdatedAt }); updated++;
     }
   }
   return {added,updated};
+}
+export function validateFolders(input) {
+  const output=[{id:'default',name:'默认收藏夹'}];
+  const seen=new Set(['default']);
+  if(!Array.isArray(input))return output;
+  for(const folder of input.slice(0,200)) {
+    if(!folder||typeof folder.id!=='string'||!FOLDER_ID.test(folder.id)||
+      typeof folder.name!=='string'||!folder.name.trim()||folder.name.length>80||seen.has(folder.id))continue;
+    if(folder.id==='default'){output[0].name=folder.name.trim();continue;}
+    output.push({id:folder.id,name:folder.name.trim()});seen.add(folder.id);
+  }
+  return output;
+}
+export function validateAliases(input,forum=false) {
+  const result={};
+  if(!input||typeof input!=='object'||Array.isArray(input))return result;
+  const pattern=forum?/^\d{16,22}:\d{16,22}$/:ID;
+  for(const [key,value] of Object.entries(input).slice(0,5000)){
+    if(pattern.test(key)&&typeof value==='string'&&value.trim()&&value.length<=120)result[key]=value.trim();
+  }
+  return result;
 }
 export function cleanPrefs(raw) {
   const p = { ...DEFAULTS };
@@ -208,6 +237,13 @@ export function cleanPrefs(raw) {
   if ([0,1,2,3,4].includes(raw.lines)) p.lines = raw.lines;
   p.filters = {};
   if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:f.scope,sort:f.sort};
+  p.folders=validateFolders(raw.folders);
+  p.folderSelections={};
+  if(raw.folderSelections&&typeof raw.folderSelections==='object')for(const [guild,id] of Object.entries(raw.folderSelections)) {
+    if(ID.test(guild)&&p.folders.some(f=>f.id===id))p.folderSelections[guild]=id;
+  }
+  p.guildAliases=validateAliases(raw.guildAliases,false);
+  p.forumAliases=validateAliases(raw.forumAliases,true);
   return p;
 }
 export function geometry(p, viewport, collapsed = false) {
