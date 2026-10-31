@@ -34,7 +34,7 @@ test('preference queue merges same-tab writes and preserves per-server filters',
 });
 test('layout modes, DM hiding and explicit recovery retain original dimensions',()=>{
   const {a}=app();const previous=[globalThis.innerWidth,globalThis.innerHeight];globalThis.innerWidth=1000;globalThis.innerHeight=800;
-  a.panel={style:{}},a.tab={style:{}},a.quick={};a.host={style:{setProperty:()=>{}}};a.prefs=cleanPrefs({width:620,height:500,mode:'expanded'});
+  a.panel={style:{}},a.tab={style:{}},a.quick={};a.host={style:{setProperty:()=>{}},dataset:{}};a.prefs=cleanPrefs({width:620,height:500,mode:'expanded'});
   try {
     a.context={type:'forum',guildId:G};a.layout();assert.equal(a.panel.hidden,false);assert.equal(a.tab.hidden,true);
     a.prefs.mode='collapsed';a.layout();assert.equal(a.panel.hidden,true);assert.equal(a.tab.hidden,false);
