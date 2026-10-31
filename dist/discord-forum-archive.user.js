@@ -289,13 +289,17 @@ function geometry(p, viewport, collapsed = false) {
 
 // ---- discord.js ----
 // Only visible DOM and route information. No webpack stores, token access, or HTTP interception.
-const FOLLOW = /^(?:关注(?:帖子|讨论串)?|加入(?:帖子|讨论串)?|追踪(?:帖子)?|訂閱(?:帖子)?)$/;
-const UNFOLLOW = /^(?:取消关注(?:帖子)?|已关注|正在关注|退出(?:帖子|讨论串)?|取消加入|已加入|已追踪)$/;
+const FOLLOW = /^(?:关注(?:帖子|讨论串|此帖)?|加入(?:帖子|讨论串)?|追踪(?:帖子)?)$/;
+const UNFOLLOW = /^(?:取消关注(?:帖子|此帖)?|停止关注|已关注|正在关注|退出(?:帖子|讨论串)?|取消加入|已加入|已追踪)$/;
 const CREATE = /^(?:新建帖子|创建帖子|发布帖子|发表帖子|发起帖子)$/;
 function normalizeThreadTitle(value) {
   const source=String(value||'').replace(/\s+/g,' ').trim();
-  // Strip the extra Discord UI tab label without altering normal in-title occurrences.
-  return source.replace(/(?:[\s|｜·]+聊天|】聊天)$/u,'').trim() || source;
+  // Preserve a closing bracket when Discord appends the Chinese "聊天" UI label.
+  let cleaned=source.replace(/[\s|｜·]+聊天$/u,'');
+  if(cleaned===source && source.endsWith('】聊天'))cleaned=source.slice(0,-2);
+  // Long forum titles may have the UI label appended without a separator.
+  if(cleaned===source && source.length>=40 && source.endsWith('聊天'))cleaned=source.slice(0,-2);
+  return cleaned.trim() || source;
 }
 function controlLabel(el) { return (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim(); }
 function visible(el) { return !!el && !el.closest('[hidden],[aria-hidden="true"]') && el.getClientRects().length > 0; }
@@ -597,7 +601,7 @@ class ArchiveApp {
     menu('切换本地资料库 / 账号',()=>this.chooseProfile());
     menu('导入当前可见的已关注帖',()=>this.importVisibleFollowed());
     menu('通过链接添加帖子',()=>this.addDialog());
-    menu('导出 JSON 备份',()=>this.dataDialog());
+    menu('导出 JSON 备份',()=>this.exportNow());
     menu('导入 JSON 备份',()=>this.dataDialog());
     menu('重置面板位置',()=>this.resetLayout());
     this.layout(); this.renderList();
@@ -764,9 +768,12 @@ class ArchiveApp {
       const name=element('input',{value:current?.name||'',maxlength:'80',placeholder:'收藏夹名称','aria-label':'收藏夹名称'});
       body.append(name,element('button',{class:'primary',text:'保存',onclick:submit(async()=>{
         const value=name.value.trim();if(!value)throw new Error('请输入名称。');
+        const newId=current?null:uid();
         const folders=current?this.prefs.folders.map(f=>f.id===id?{...f,name:value}:f):
-          [...this.prefs.folders,{id:uid(),name:value}];
-        await this.savePrefs({folders});close();this.updateContext();
+          [...this.prefs.folders,{id:newId,name:value}];
+        const updates={folders};
+        if(newId&&this.context.guildId)updates.folderSelections={...this.prefs.folderSelections,[this.context.guildId]:newId};
+        await this.savePrefs(updates);close();this.updateContext();this.renderList();
       })}));
     });
   }
@@ -948,7 +955,7 @@ class ArchiveApp {
     const shortDate=v=>{
       if(v==null)return '—';
       const days=Math.max(0,Math.floor((Date.now()-v)/86400000));
-      if(days===0)return '今天';
+      if(days===0)return '0天';
       if(days<100)return days+'天';
       const d=new Date(v);return (d.getMonth()+1)+'/'+d.getDate();
     };
@@ -1048,6 +1055,15 @@ class ArchiveApp {
     const store=this.store;
     this.dialog('删除本地收藏',(body,close,submit)=>body.append(element('p',{text:record.customTitle??record.originalTitle}),element('p',{text:'仅从当前资料库删除，不会退出 Discord 关注，也不会删除原帖。此操作会同步到其他标签页。'}),
       element('div',{class:'row end'},element('button',{text:'取消',onclick:close}),element('button',{class:'danger',text:'确认删除',onclick:submit(async()=>{await store.remove(identity(record));close();this.toast('已删除本地收藏。');})}))));
+  }
+  async exportNow() {
+    if(!this.profile)return this.chooseProfile();
+    await this.store.refresh();
+    const blob=new Blob([JSON.stringify(exportData(this.store.records.values(),this.profile,this.prefs),null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=element('a',{href:url,download:'Forum-Archive-'+new Date().toISOString().slice(0,10)+'.json'});
+    this.root.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    this.toast('已创建 JSON 备份。');
   }
   dataDialog() {
     if(!this.profile)return this.chooseProfile();const store=this.store,profile=this.profile;
