@@ -19,7 +19,7 @@ try {
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.getByLabel('新资料库名称').fill('Browser Test');await page.getByRole('button',{name:'创建并使用',exact:true}).click();
-  await page.getByRole('link',{name:/教程2｜/}).click();await page.getByRole('button',{name:'收藏当前页面或添加链接',exact:true}).click();
+  await page.getByRole('link',{name:/教程2｜/}).click();await page.getByRole('button',{name:'一键收藏当前帖子',exact:true}).click();
   await page.getByRole('region',{name:'收藏列表'}).getByRole('article').waitFor();
   assert.equal(await page.locator('article.card').count(),1);
   await page.getByRole('button',{name:'切换星标',exact:true}).click();
