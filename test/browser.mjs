@@ -29,6 +29,23 @@ try {
   await page.locator('#thread').click();await page.locator('#follow').click();
   await page.getByRole('button',{name:'独立帖子收藏入口'}).waitFor({state:'hidden'});
   await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:'父频道未知 · 直接访问帖子',exact:true}).waitFor();
+  // Focus is inside the userscript's Shadow DOM; Discord's document-level
+  // keyboard shortcuts must not steal input into its post composer.
+  const composer=page.locator('#discord-composer');
+  const search=page.getByRole('searchbox',{name:'搜索收藏'});
+  await search.click();await search.pressSequentially('test123');
+  assert.equal(await search.inputValue(),'test123');
+  assert.equal(await composer.textContent(),'','search typing leaked to Discord composer');
+  await page.getByRole('button',{name:'添加帖子链接'}).click();
+  const linkField=page.getByRole('textbox',{name:'帖子链接'});
+  await linkField.pressSequentially('https://discord.com/channels/111111111111111111/333333333333333333');
+  assert.ok((await linkField.inputValue()).startsWith('https://'));
+  assert.equal(await composer.textContent(),'','dialog typing leaked to Discord composer');
+  await page.keyboard.press('Escape');
+  await composer.click();await page.keyboard.type('outside');
+  assert.equal(await composer.textContent(),'outside','Discord editor should still type normally');
+  await search.fill('');
+
   await page.getByRole('button',{name:'折叠面板',exact:true}).click();await page.getByRole('button',{name:'展开收藏面板',exact:true}).click();
   await page.locator('#theme').click();
   await page.locator('#audit').click();const report=await page.locator('#fixture-log').textContent();assert.ok(!report.includes('FAIL'),report);
