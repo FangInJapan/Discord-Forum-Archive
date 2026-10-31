@@ -518,7 +518,10 @@ export class ArchiveApp {
         if(!imported)throw new Error('请先选择有效备份文件。');
         try {
           const folders=[...this.prefs.folders];
-          for(const f of imported.folders||[])if(!folders.some(x=>x.id===f.id))folders.push(f);
+          for(const f of imported.folders||[]) {
+            if(f.id==='default'&&folders[0]?.name==='默认收藏夹')folders[0]={...f};
+            else if(!folders.some(x=>x.id===f.id))folders.push(f);
+          }
           await this.savePrefs({folders,
             guildAliases:{...imported.guildAliases,...this.prefs.guildAliases},
             forumAliases:{...imported.forumAliases,...this.prefs.forumAliases}});
