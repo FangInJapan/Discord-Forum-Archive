@@ -1,6 +1,6 @@
 # Discord Forum Archive
 
-**V1.1.0 · 中文界面 · Tampermonkey · 本地收藏**
+**V1.1.1 · 中文界面 · Tampermonkey · 本地收藏**
 
 独立保存 Discord 论坛帖子：被 Bot 移出或取消原生关注时，本地收藏不会自动删除。
 
@@ -39,3 +39,11 @@ Node.js 20+。执行 npm test、npm run build、npm run check。构建后的单�
 源代码：src/core.js、src/discord.js、src/app.js、src/style.js；构建脚本：scripts/build.mjs；测试：test/。
 
 **验证说明**：当前已对语法、数据迁移与基本收藏夹逻辑进行检查；真实登录 Discord 后的 UI/关注兼容性仍需实测，不能把模拟测试当成实机通过。
+
+## V1.1.1 输入焦点修复
+
+修复 Discord 帖子页面中，Forum Archive 搜索框或弹窗输入获得焦点后，按键仍被 Discord 聊天编辑器接收的问题。脚本在 Shadow DOM 边界隔离键盘、输入法组合、粘贴及焦点事件，并在面板内部可编辑控件获得焦点时临时标记宿主可编辑，以避免外部快捷键监听器误判。
+
+不阻止输入控件的浏览器默认行为，也不影响面板内的快捷键、Enter 提交、Esc 关闭、Tab 切换或中文输入法组合。离开输入框后恢复宿主状态，不应阻止 Discord 编辑器正常输入。
+
+自动化校验包含可执行的事件隔离单元测试及模拟 Discord 全局捕获阶段快捷键的 Chromium 浏览器测试。真实 Discord 不同客户端版本中的快捷键实现可能不同，仍需在实际帖子页面验证。
