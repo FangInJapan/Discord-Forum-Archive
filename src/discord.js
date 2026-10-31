@@ -17,7 +17,7 @@ export class DiscordAdapter {
     this.doc = doc; this.onContext = onContext; this.onFollow = onFollow; this.isEnabled = isEnabled; this.log = log;
     this.context = {type:'unknown'}; this.links = new Map(); this.catalog = new Map(); this.knownThreads = new Map();
     this.href=href;this.pending = null; this.lastHref = ''; this.signature = ''; this.timer = null; this.followSerial = 0;
-    this.menuTarget = null; this.click = this.handleClick.bind(this); this.scheduled = () => this.schedule();
+    this.menuTarget = null; this.contextMenu = e => this.handleContextMenu(e); this.click = this.handleClick.bind(this); this.scheduled = () => this.schedule();
   }
   main() { return this.doc.querySelector('main,[role="main"]'); }
   forumRoot(main) {
@@ -97,6 +97,30 @@ export class DiscordAdapter {
     if (context.type !== 'thread' || identity(context) !== identity(c)) return false;
     return this.controls().some(el => !el.closest('[role="menu"]') && UNFOLLOW.test(controlLabel(el)));
   }
+  handleContextMenu(event) {
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    if (!target || target.closest('#dfa-root')) return;
+    const c = this.resolveTarget(target);
+    if (c?.type === 'thread') this.menuTarget = {...c,at:Date.now()};
+  }
+  visibleFollowingPosts() {
+    const c = this.inspect(), root = this.forumRoot(this.main());
+    if (c.type !== 'forum' || !root) return [];
+    const results = new Map();
+    for (const anchor of root.querySelectorAll('a[href*="/channels/"]')) {
+      const card = anchor.closest('article,[role="listitem"],[data-thread-id]');
+      if (!card || !visible(anchor)) continue;
+      const status = [...card.querySelectorAll('button,[role="button"],[aria-label],[title]')]
+        .some(el => visible(el) && UNFOLLOW.test(controlLabel(el)));
+      if (!status) continue;
+      try {
+        const p = parseLink(anchor.href);
+        if (p.guildId !== c.guildId || p.threadId === c.forumId) continue;
+        results.set(identity(p), {...c,type:'thread',threadId:p.threadId,originalTitle:this.title(anchor) || anchor.textContent.trim(),url:p.url});
+      } catch {}
+    }
+    return [...results.values()];
+  }
   handleClick(event) {
     if (!event.isTrusted || event.composedPath().some(n => n?.id === 'dfa-root')) return;
     const target = event.target instanceof Element ? event.target : event.target?.parentElement;
@@ -147,7 +171,7 @@ export class DiscordAdapter {
     this.followTimer = setTimeout(check,220);
   }
   start() {
-    this.doc.addEventListener('click',this.click,true);
+    this.doc.addEventListener('click',this.click,true); this.doc.addEventListener('contextmenu',this.contextMenu,true);
     window.addEventListener('popstate',this.scheduled); window.addEventListener('hashchange',this.scheduled);
     this.observer = new MutationObserver(mutations=> {
       if (mutations.some(m=>m.target !== this.doc.getElementById('dfa-root') && !this.doc.getElementById('dfa-root')?.contains(m.target))) this.schedule();
@@ -159,6 +183,6 @@ export class DiscordAdapter {
   }
   stop() {
     this.observer?.disconnect(); clearInterval(this.interval); clearTimeout(this.timer); clearTimeout(this.followTimer); this.followSerial++;
-    this.doc.removeEventListener('click',this.click,true); window.removeEventListener('popstate',this.scheduled); window.removeEventListener('hashchange',this.scheduled);
+    this.doc.removeEventListener('click',this.click,true);this.doc.removeEventListener('contextmenu',this.contextMenu,true); window.removeEventListener('popstate',this.scheduled); window.removeEventListener('hashchange',this.scheduled);
   }
 }
