@@ -13,6 +13,20 @@ export function element(tag, attrs = {}, ...children) {
   }
   e.append(...children.filter(c=>c !== null && c !== undefined)); return e;
 }
+// Discord listens for keyboard shortcuts above the userscript's Shadow DOM.
+// Consume bubbling UI events at the ShadowRoot boundary after native controls
+// have received them, without cancelling their default typing/IME behaviour.
+export function isolatePanelEvents(root) {
+  const types = [
+    'keydown','keypress','keyup','beforeinput','input',
+    'compositionstart','compositionupdate','compositionend',
+    'paste','cut','copy','focusin','focusout',
+    'pointerdown','pointerup','mousedown','mouseup','click','dblclick','contextmenu'
+  ];
+  const stop = event => event.stopPropagation();
+  for (const type of types) root.addEventListener(type,stop);
+  return () => {for(const type of types)root.removeEventListener(type,stop);};
+}
 export class ArchiveApp {
   constructor(storage, href = ()=>location.href) {
     this.storage = storage; this.prefs = cleanPrefs(); this.context = {type:'unknown'}; this.profile = null; this.store = null;
@@ -24,7 +38,8 @@ export class ArchiveApp {
   async start() {
     if (document.getElementById('dfa-root')) return;
     this.host = element('div',{id:'dfa-root'}); this.host.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:2147483000;';
-    this.root = this.host.attachShadow({mode:'open'}); const style = element('style',{text:STYLE+' .panel,.tab,.overlay,.toast,.quick{pointer-events:auto}'});
+    this.root = this.host.attachShadow({mode:'open'}); this.cleanups.push(isolatePanelEvents(this.root));
+    const style = element('style',{text:STYLE+' .panel,.tab,.overlay,.toast,.quick{pointer-events:auto}'});
     this.root.append(style); document.body.append(this.host);
     this.buildPanel(); this.applyTheme();
     this.adapter = new DiscordAdapter(document,c=>this.safe(()=>this.navigate(c))(),c=>this.safe(()=>this.capture(c))(),()=>this.profile && this.prefs.autoFollow ? this.profile.id : null,this.log,this.href);
