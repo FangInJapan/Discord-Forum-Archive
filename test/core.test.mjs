@@ -193,3 +193,20 @@ test('scan snapshots migrate safely and never include unknown forums',()=>{
   assert.equal(p.filters[G].updates,'missing');
   assert.deepEqual(cleanPrefs({}).scanResults,{});
 });
+
+test('confirmed forum classification is validated, backup-safe, and profile-local',()=>{
+  const manualKey=G+':'+F,notForumKey=G+':666666666666666666';
+  const prefs=cleanPrefs({knownForums:{
+    [manualKey]:{kind:'forum',source:'manual'},
+    [notForumKey]:{kind:'not-forum',source:'manual'},
+    'bad-id':{kind:'forum',source:'manual'},
+    [G+':777777777777777777']:{kind:'forum',source:'invalid'}
+  }});
+  assert.equal(Object.keys(prefs.knownForums).length,2);
+  const archived=exportData([record()],{id:'testing-001',name:'主资料库'},prefs);
+  const recovered=parseImport(JSON.stringify(archived));
+  assert.deepEqual(recovered.knownForums,prefs.knownForums);
+  const old=parseImport(JSON.stringify({...archived,knownForums:undefined}));
+  assert.deepEqual(old.knownForums,{});
+  assert.deepEqual(cleanPrefs().knownForums,{});
+});
