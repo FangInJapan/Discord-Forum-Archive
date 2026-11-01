@@ -128,6 +128,13 @@ try {
   await page.waitForFunction(()=>window.fixtureApp.store.records.has('111111111111111111:666666666666666666'));
   await page.waitForFunction(()=>window.fixtureApp.currentFilter().updates==='all');
   await page.getByRole('button',{name:'独立帖子收藏入口'}).waitFor({state:'hidden'});
+  const debug=await page.evaluate(()=>{
+    const a=window.fixtureApp;
+    return {filter:a.currentFilter(),viewMode:a.viewMode,context:a.context,
+      selected:a.selectedFolder().id,posts:[...a.store.records.values()].map(r=>({id:r.threadId,forumId:r.forumId,collectionId:r.collectionId,title:r.originalTitle})),
+      shown:[...a.list.querySelectorAll('.card-title')].map(n=>n.textContent)};
+  });
+  console.log('Post-filter diagnostic:',JSON.stringify(debug));
   await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:'父频道未知 · 直接访问帖子',exact:true}).waitFor();
   // Focus is inside the userscript's Shadow DOM; Discord's document-level
   // keyboard shortcuts must not steal input into its post composer.
