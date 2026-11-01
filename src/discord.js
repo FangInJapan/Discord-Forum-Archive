@@ -142,7 +142,7 @@ export class DiscordAdapter {
   }
   setKnownForums(registry={}) {
     this.savedForumRegistry=new Map(Object.entries(registry||{}));
-    this.schedule();
+    if(this.observer)this.schedule();
   }
   forumRegistration(guildId,forumId) {
     return this.savedForumRegistry.get(guildId+':'+forumId)||null;
@@ -158,7 +158,8 @@ export class DiscordAdapter {
       guildId:route.guildId,forumId:route.channelId,forumName:''
     } : this.catalog.get(route.guildId+':'+route.channelId));
     // A thread selected in a visible side panel overrides the underlying forum.
-    const sidebar = [...this.doc.querySelectorAll('[class*="threadSidebar"],[data-thread-id]')].find(visible);
+    const sidebar = [...this.doc.querySelectorAll('[class*="threadSidebar"],[role="complementary"][data-thread-id]')]
+      .find(el=>visible(el) && !el.closest('[class*="forumPost"],[class*="postCard"],article'));
     const candidate = new URL(this.href()).searchParams.get('thread') || sidebar?.getAttribute('data-thread-id');
     const candidateId = candidate && ID.test(candidate) ? candidate : null;
     const known = this.knownThreads.get(route.guildId+':'+(candidateId || route.channelId));
