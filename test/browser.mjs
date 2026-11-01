@@ -162,6 +162,41 @@ try {
   await page.locator('#thread').click();
   await page.waitForFunction(()=>window.fixtureApp.context.type==='thread');
   assert.equal(await page.getByRole('button',{name:'折叠面板'}).isVisible(),true,'manual expanded mode survives thread navigation');
+  // Manual recognition without any forum-specific CSS or create-post controls.
+  // The synthetic forum card deliberately carries data-thread-id to guard
+  // against the old false sidebar detection.
+  await page.locator('#unrecognized').click();
+  await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().type==='unknown');
+  await page.getByRole('button',{name:'刷新当前页面可见收藏的标题'}).click();
+  const recognizer=page.getByRole('dialog',{name:'确认频道类型'});
+  await recognizer.waitFor();
+  await page.evaluate(async()=>{
+    await window.fixtureApp.store.add(makeRecord({
+      guildId:'111111111111111111',forumId:'888888888888888888',
+      threadId:'999999999999999999',originalTitle:'保存的旧帖子标题'
+    },'manual-link'));
+  });
+  await recognizer.getByRole('button',{name:'确认当前频道是论坛'}).click();
+  await page.waitForFunction(()=>{
+    const app=window.fixtureApp;
+    const entry=app.prefs.knownForums['111111111111111111:888888888888888888'];
+    const post=app.store.records.get('111111111111111111:999999999999999999');
+    return entry?.source==='manual'&&entry?.kind==='forum'&&
+      post?.originalTitle==='已更新的活跃帖子标题'&&post.changeUnread===true;
+  });
+  await page.locator('#forum').click();
+  await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().forumId==='222222222222222222');
+  await page.locator('#unrecognized').click();
+  await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().type==='forum');
+  await page.getByRole('button',{name:'点击编辑服务器和论坛的显示名称'}).click();
+  await page.getByRole('dialog',{name:'修改显示名称'}).getByRole('button',{name:'频道类型识别 / 修正'}).click();
+  await page.getByRole('dialog',{name:'确认频道类型'}).getByRole('button',{name:'这不是论坛（纠正误识别）'}).click();
+  await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().type!=='forum'&&
+    window.fixtureApp.prefs.knownForums['111111111111111111:888888888888888888']?.kind==='not-forum');
+  await page.getByRole('button',{name:'点击编辑服务器和论坛的显示名称'}).click();
+  await page.getByRole('dialog',{name:'修改显示名称'}).getByRole('button',{name:'频道类型识别 / 修正'}).click();
+  await page.getByRole('dialog',{name:'确认频道类型'}).getByRole('button',{name:'确认当前频道是论坛'}).click();
+  await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().type==='forum');
   await page.locator('#theme').click();
   await page.locator('#audit').click();const report=await page.locator('#fixture-log').textContent();assert.ok(!report.includes('FAIL'),report);
   await mkdir('test-output',{recursive:true});
