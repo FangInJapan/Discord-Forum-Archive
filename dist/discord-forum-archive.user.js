@@ -1543,7 +1543,7 @@ class ArchiveApp {
     };
     for(const r of records.slice(0,this.limit)) {
       const key=identity(r),title=r.customTitle??r.originalTitle;
-      const link=element('a',{class:'card-title'+(this.expanded.has(key)||!this.prefs.lines?' full':''),href:r.url,title,'data-focus':key+':open',text:title,onclick:()=>this.captureBookmarkScroll()});
+      const link=element('a',{class:'card-title'+(this.expanded.has(key)||!this.prefs.lines?' full':''),href:r.url,title,'aria-label':title,'data-focus':key+':open',text:title,onclick:()=>this.captureBookmarkScroll()});
       const star=element('button',{class:'star',text:r.starred?'★':'☆','aria-label':'切换星标','aria-pressed':String(r.starred),onclick:this.safe(()=>this.store.patch(key,{starred:!this.store.records.get(key)?.starred}))});
       const when=element('span',{class:'post-age',title:r.titleUpdatedAt?'上次确认标题变化：'+new Date(r.titleUpdatedAt).toLocaleString():'尚未读取到标题变化时间',text:shortDate(r.titleUpdatedAt)});
       const more=element('button',{class:'more',text:'⋯','aria-label':'帖子更多操作',title:'更多操作','data-focus':key+':more',onclick:this.safe(()=>this.cardMenu(r))});
