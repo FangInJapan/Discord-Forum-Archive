@@ -224,6 +224,9 @@ try {
     const listener=e=>{
       if(!e.target.closest?.('a.card-title'))return;
       e.preventDefault();
+      // Playwright scrolls a link into view before clicking. Preserve the
+      // position at the actual click, not the earlier setup scroll value.
+      window.fixtureClickScroll=app.list.scrollTop;
       app.root.removeEventListener('click',listener);
       window.fixtureShowThread('333333333333333333','收藏链接跳转后的帖子');
     };
@@ -235,11 +238,13 @@ try {
   await page.waitForFunction(()=>window.fixtureApp?.context.type==='thread'&&
     window.fixtureApp.context.threadId==='333333333333333333');
   await page.waitForTimeout(260);
-  assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),clicked.top,
-    'opening a bookmark must retain the list scroll position');
+  const actualClickScroll=await page.evaluate(()=>window.fixtureClickScroll);
+  assert.ok(actualClickScroll>100,'click-time scroll must be non-zero');
+  assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),actualClickScroll,
+    'opening a bookmark must retain its actual click-time scroll position');
   await page.evaluate(()=>window.fixtureApp.sync());
-  assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),clicked.top,
-    'background sync must not reset the scroll after navigation');
+  assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),actualClickScroll,
+    'background sync must not reset scroll after navigation');
   await page.locator('#forum').click();
   await page.waitForFunction(()=>window.fixtureApp.context.type==='forum');
   const beforeReload=await page.evaluate(()=>{
