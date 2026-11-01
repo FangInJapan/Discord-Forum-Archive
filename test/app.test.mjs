@@ -159,3 +159,43 @@ test('bookmark click checkpoint can be consumed after full reload without cross-
     assert.equal(entries.has(key),false,'checkpoint is one-shot');
   }finally{globalThis.sessionStorage=original;}
 });
+
+test('current bookmark highlighting switches with the active thread and clears on forum',async()=>{
+  const {a}=app();
+  const U='444444444444444444';
+  await a.store.add(makeRecord({guildId:G,threadId:T,forumId:F,originalTitle:'当前帖子'}));
+  await a.store.add(makeRecord({guildId:G,threadId:U,forumId:F,originalTitle:'另一帖子'}));
+  const fakeCard=key=>{
+    const attrs=new Map(),classes=new Set();
+    const link={
+      setAttribute:(k,v)=>attrs.set(k,v),
+      removeAttribute:k=>attrs.delete(k)
+    };
+    return {key,classes,attrs,link,
+      classList:{toggle:(k,yes)=>yes?classes.add(k):classes.delete(k)},
+      getAttribute:keyName=>keyName==='data-post-key'?key:null,
+      querySelector:()=>link
+    };
+  };
+  const first=fakeCard(G+':'+T),second=fakeCard(G+':'+U);
+  a.list={querySelectorAll:()=>[first,second]};
+  a.context={type:'thread',guildId:G,threadId:T};
+  a.highlightCurrentPost();
+  assert.equal(first.classes.has('is-current-post'),true);
+  assert.equal(first.attrs.size,0);
+  assert.equal(first.link && first.link.setAttribute!==undefined,true);
+  assert.equal(second.classes.has('is-current-post'),false);
+  a.context={type:'thread',guildId:G,threadId:U};
+  a.highlightCurrentPost();
+  assert.equal(first.classes.has('is-current-post'),false);
+  assert.equal(second.classes.has('is-current-post'),true);
+  assert.equal(second.link && second.attrs.size,0);
+  a.context={type:'forum',guildId:G,forumId:F};
+  a.highlightCurrentPost();
+  assert.equal(first.classes.has('is-current-post'),false);
+  assert.equal(second.classes.has('is-current-post'),false);
+  a.context={type:'unknown',guildId:G,channelId:T};
+  assert.equal(a.currentPostIdentity(),G+':'+T,'unclassified direct saved-thread link should still highlight');
+  a.context={type:'unknown',guildId:G,channelId:F};
+  assert.equal(a.currentPostIdentity(),null,'a forum channel must not appear as a saved post');
+});
