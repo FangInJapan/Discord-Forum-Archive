@@ -94,6 +94,7 @@ try {
   const scan=await page.evaluate(()=>window.fixtureApp.prefs.scanResults['111111111111111111:222222222222222222']);
   assert.deepEqual(scan.missing,['555555555555555555']);
   await view.getByRole('tab',{name:'全部'}).click();
+  await page.waitForFunction(()=>window.fixtureApp.currentFilter().updates==='all');
   assert.equal(await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:'其他论坛未扫描帖子'}).count(),1,
     'All view must cover saved posts across forums in the current server');
   await page.evaluate(()=>window.fixtureApp.store.patch('111111111111111111:444444444444444444',{changeUnread:false}));
@@ -115,6 +116,7 @@ try {
   await page.getByRole('dialog',{name:'帖子操作'}).getByRole('button',{name:'标记标题变化为已查看'}).click();
   await page.getByRole('region',{name:'收藏列表'}).getByText('目前没有尚未查看的标题变化。').waitFor();
   await view.getByRole('tab',{name:'全部'}).click();
+  await page.waitForFunction(()=>window.fixtureApp.currentFilter().updates==='all');
   assert.equal(await updateTab.getAttribute('aria-pressed'),'false');
   await page.getByRole('button',{name:'设置',exact:true}).click();
   const settings=page.getByRole('dialog',{name:'Forum Archive 设置'});
@@ -123,6 +125,8 @@ try {
   await settings.getByRole('tab',{name:'收藏'}).click();
   await page.getByLabel('自动记录已确认的原生关注').check();await page.getByRole('button',{name:'保存设置',exact:true}).click();
   await page.locator('#thread').click();await page.locator('#follow').click();
+  await page.waitForFunction(()=>window.fixtureApp.store.records.has('111111111111111111:666666666666666666'));
+  await page.waitForFunction(()=>window.fixtureApp.currentFilter().updates==='all');
   await page.getByRole('button',{name:'独立帖子收藏入口'}).waitFor({state:'hidden'});
   await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:'父频道未知 · 直接访问帖子',exact:true}).waitFor();
   // Focus is inside the userscript's Shadow DOM; Discord's document-level
