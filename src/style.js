@@ -255,4 +255,25 @@ input[type=range]{accent-color:var(--accent)}
 }
 :host([data-motion="off"]) *, :host([data-motion="off"]) *::before,:host([data-motion="off"]) *::after{animation:none!important;transition:none!important}
 
+/* Three-state iOS-inspired segmented picker: scope is the entire current server. */
+.filters{grid-template-columns:minmax(174px,1.8fr) minmax(72px,1fr) 32px;gap:7px}
+.filter-segments{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;min-width:0;
+ padding:3px;border:1px solid var(--glass-border);border-radius:12px;
+ background:color-mix(in srgb,var(--card) 88%,var(--bg))}
+.filter-segments .filter-segment{
+ display:flex;align-items:center;justify-content:center;min-width:0;min-height:27px;
+ padding:4px 3px;border:1px solid transparent;border-radius:9px;
+ background:transparent;color:var(--muted);font-size:11px;font-weight:500;white-space:nowrap;
+ transition:background-color 180ms ease,color 180ms ease,box-shadow 180ms ease}
+.filter-segments .filter-segment[aria-pressed="true"]{
+ color:var(--fg);font-weight:600;background:color-mix(in srgb,var(--accent) 13%,var(--card));
+ border-color:color-mix(in srgb,var(--accent) 30%,var(--line));
+ box-shadow:0 2px 8px #0002,inset 0 1px 0 color-mix(in srgb,var(--fg) 12%,transparent)}
+.filter-segments .filter-segment:not([aria-pressed="true"]):hover{background:var(--hover);color:var(--fg)}
+.filter-segments .filter-segment:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media(max-width:390px){
+ .filters{grid-template-columns:minmax(145px,1.7fr) minmax(62px,1fr) 30px;gap:4px}
+ .filter-segments .filter-segment{font-size:10px;padding:3px 1px}
+}
+
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}*::before,*::after{transition:none!important;animation:none!important}}`;
