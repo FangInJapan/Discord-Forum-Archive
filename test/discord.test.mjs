@@ -102,7 +102,7 @@ test('data-thread-id on a forum card must not impersonate a thread sidebar',()=>
   const {adapter}=fake({forum:true});
   const previous=adapter.doc.querySelectorAll;
   const card={getAttribute:()=>T,closest:()=>({}),getClientRects:()=>[{}]};
-  adapter.doc.querySelectorAll=selector=>selector.includes('threadSidebar')?[card]:previous(selector);
+  adapter.doc.querySelectorAll=selector=>selector.includes('threadSidebar')&&!selector.includes('main header')?[card]:previous(selector);
   assert.equal(adapter.inspect().type,'forum');
 });
 test('real sidebar thread selection outranks a manually registered forum',()=>{
