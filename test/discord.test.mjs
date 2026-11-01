@@ -1,7 +1,7 @@
 // DOM boundary tests use explicit small stubs, not a real browser or Discord account.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {DiscordAdapter,FOLLOW,UNFOLLOW,routeOf,normalizeThreadTitle} from '../src/discord.js';
+import {DiscordAdapter,FOLLOW,UNFOLLOW,routeOf,normalizeThreadTitle,visibleForumPostLink} from '../src/discord.js';
 const G='111111111111111111',F='222222222222222222',T='333333333333333333';
 function fake({forum=false,following=false,known=false,query='',sidebar=false}={}) {
   const heading={textContent:'完整标题 '+ '日本語 中文 English 🧪'.repeat(10),closest:()=>null,getClientRects:()=>[{}]};
@@ -67,4 +67,17 @@ test('native capture requires stable inverse state, same route/control/profile (
 });
 test('untrusted clicks are ignored',()=>{
   const {adapter}=fake();assert.doesNotThrow(()=>adapter.handleClick({isTrusted:false}));assert.equal(adapter.pending,null);
+});
+
+test('forum cards resolve parent-qualified URLs without mistaking the forum ID for the post',()=>{
+  const context={type:'forum',guildId:G,forumId:F};
+  const simple=visibleForumPostLink('https://discord.com/channels/'+G+'/'+T,context);
+  assert.equal(simple.threadId,T);
+  const nested=visibleForumPostLink('https://discord.com/channels/'+G+'/'+F+'/'+T,context);
+  assert.equal(nested.threadId,T);
+  assert.equal(nested.url,'https://discord.com/channels/'+G+'/'+T);
+  assert.equal(visibleForumPostLink('https://discord.com/channels/'+G+'/'+F,context),null);
+  assert.equal(visibleForumPostLink('https://discord.com/channels/999999999999999999/'+F+'/'+T,context),null);
+  assert.equal(visibleForumPostLink('https://evil.example/channels/'+G+'/'+F+'/'+T,context),null);
+  assert.equal(visibleForumPostLink('https://discord.com/channels/'+G+'/'+F+'/'+T,{...context,type:'thread'}),null);
 });
