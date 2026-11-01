@@ -165,7 +165,7 @@ export class DiscordAdapter {
     const known = this.knownThreads.get(route.guildId+':'+(candidateId || route.channelId));
     const captured = this.links.get(route.guildId+':'+(candidateId || route.channelId));
     const follows = this.controls().filter(b=>!b.closest('[role="menu"]') && (FOLLOW.test(controlLabel(b)) || UNFOLLOW.test(controlLabel(b))));
-    const threadMarkup = !!main?.querySelector('[data-thread-id],[class*="threadChat"]');
+    const threadMarkup = !!main?.querySelector('[class*="threadChat"],[data-list-id="chat-messages"],[id^="chat-messages"]');
     // Explicit forum registration takes precedence over weak thread heuristics
     // for the bare guild/channel route, but never over a selected thread ID.
     const isThread=!!(candidateId || (!registeredForum && (
