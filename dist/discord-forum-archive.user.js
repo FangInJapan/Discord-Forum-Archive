@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Forum Archive
 // @namespace    https://github.com/FangInJapan/Discord-Forum-Archive
-// @version      1.3.3
+// @version      1.4.0
 // @description  独立保存 Discord 论坛帖子收藏；支持分类、长标题、备份和可调面板。
 // @author       FangInJapan
 // @match        https://discord.com/channels/*
@@ -26,7 +26,7 @@
 
 // ---- core.js ----
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-const VERSION = '1.3.3';
+const VERSION = '1.4.0';
 const SCHEMA = 1;
 const PREFIX = 'dfa:v1:';
 const ID = /^[0-9]{16,22}$/;
@@ -1119,6 +1119,7 @@ class ArchiveApp {
     this.adapter.setKnownForums(this.prefs.knownForums);
     this.force=false;this.changed();this.layout();this.applyTheme();
     if(resume&&this.context.guildId===resume.guildId)this.list.scrollTop=resume.top;
+    if(this.currentPostIdentity())this.focusCurrentPost();
     this.adapter.scan();
   }
   changed() {
@@ -1176,8 +1177,74 @@ class ArchiveApp {
       else link.removeAttribute('aria-current');
     }
   }
+  // Prefer a real visible Discord-owned post link, not a fabricated SPA route.
+  findNativePostLink(record) {
+    const main=document.querySelector('main,[role="main"]');
+    if(!main)return null;
+    for(const anchor of main.querySelectorAll('a[href*="/channels/"]')){
+      if(!anchor.isConnected||!anchor.getClientRects().length||
+        anchor.closest('[hidden],[aria-hidden="true"]'))continue;
+      let url;try{url=new URL(anchor.href,location.href);}catch{continue;}
+      if(url.origin!==location.origin)continue;
+      const ids=url.pathname.match(/^\/channels\/(\d{16,22})\/(\d{16,22})(?:\/(\d{16,22}))?\/?$/);
+      if(!ids||ids[1]!==record.guildId)continue;
+      if((ids[2]===record.threadId&&!ids[3])||
+        (record.forumId&&ids[2]===record.forumId&&ids[3]===record.threadId))
+        return anchor;
+    }
+    return null;
+  }
+  openBookmarkedPost(event,record) {
+    // Leave all modified/middle/new-tab clicks and already-handled clicks alone.
+    if(event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||
+      event.shiftKey||event.altKey)return;
+    const native=this.findNativePostLink(record);
+    this.captureBookmarkScroll();
+    if(!native)return; // Missing native post link: use permalink normally.
+    event.preventDefault();
+    // Discord handles its existing anchor via its own navigation mechanism.
+    native.click();
+  }
+  recordsForCurrentView() {
+    const guild=this.context.guildId,missingIds=new Set();
+    let scannedForums=0;
+    if(guild&&this.prefs.scanResults)for(const [key,scan] of Object.entries(this.prefs.scanResults)){
+      if(!key.startsWith(guild+':'))continue;
+      scannedForums++;
+      for(const id of scan.missing||[])missingIds.add(guild+':'+id);
+    }
+    return {records:this.store&&guild?selectRecords(this.store.records.values(),{
+      ...this.context,...this.currentFilter(),scope:'server',missingIds,
+      collectionId:this.selectedFolder().id,query:this.query
+    }):[],scannedForums};
+  }
+  // Move to a newly opened saved thread, but never override view filters.
+  focusCurrentPost() {
+    const key=this.currentPostIdentity();
+    if(!key||this.panel?.hidden||!this.list)return;
+    const {records}=this.recordsForCurrentView();
+    const index=records.findIndex(r=>identity(r)===key);
+    if(index<0)return;
+    if(index>=this.limit){
+      this.limit=Math.ceil((index+1)/80)*80;
+      this.renderList();
+    }
+    const card=[...this.list.querySelectorAll('article.compact-card[data-post-key]')]
+      .find(node=>node.getAttribute('data-post-key')===key);
+    if(!card)return;
+    const bounds=this.list.getBoundingClientRect(),item=card.getBoundingClientRect();
+    if(item.top>=bounds.top+8&&item.bottom<=bounds.bottom-8)return;
+    const max=Math.max(0,this.list.scrollHeight-this.list.clientHeight);
+    const target=Math.max(0,Math.min(max,
+      this.list.scrollTop+item.top-bounds.top-(bounds.height-item.height)/2));
+    const reduce=typeof matchMedia==='function'&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const behavior=this.prefs.motion&&!reduce?'smooth':'auto';
+    if(typeof this.list.scrollTo==='function')this.list.scrollTo({top:target,behavior});
+    else this.list.scrollTop=target;
+  }
   async navigate(c) {
     const previousGuild=this.context.guildId, nextGuild=c.guildId;
+    const previousPost=this.currentPostIdentity();
     const pending=this.bookmarkNavigationScroll;
     if(previousGuild && this.list){
       const saved=pending?.guildId===previousGuild && Date.now()<pending.until ?
@@ -1198,6 +1265,8 @@ class ArchiveApp {
       this.highlightCurrentPost();
     }
     this.layout();
+    const selected=this.currentPostIdentity();
+    if(selected&&selected!==previousPost)this.focusCurrentPost();
     if(pending?.guildId===nextGuild&&this.profile){
       try{sessionStorage.removeItem(PREFIX+'scroll:'+this.profile.id);}catch{}
     }
@@ -1518,19 +1587,9 @@ class ArchiveApp {
   renderList() {
     if(!this.list)return;const oldScroll=this.list.scrollTop;
     const active=this.root.activeElement, focusKey=active?.getAttribute('data-focus');
-    const frag=document.createDocumentFragment();let records=[];
+    const frag=document.createDocumentFragment();
+    const {records,scannedForums}=this.recordsForCurrentView();
     const guild=this.context.guildId;
-    const missingIds=new Set();
-    let scannedForums=0;
-    if(guild && this.prefs.scanResults)for(const [key,scan] of Object.entries(this.prefs.scanResults)){
-      if(!key.startsWith(guild+':'))continue;
-      scannedForums++;
-      for(const id of scan.missing||[])missingIds.add(guild+':'+id);
-    }
-    if(this.store && guild)records=selectRecords(this.store.records.values(),{
-      ...this.context,...this.currentFilter(),scope:'server',
-      missingIds,collectionId:this.selectedFolder().id,query:this.query
-    });
     this.count.textContent=records.length+' 条 · 资料库共 '+(this.store?.records.size||0)+' 条'+
       (this.viewMode==='missing'?' · 已检查 '+scannedForums+' 个论坛':'');
     if(!records.length)frag.append(element('div',{class:'empty',text:!this.profile?'选择资料库后即可开始收藏。':!this.context.guildId?'请进入服务器查看收藏。':this.query?'没有匹配的收藏。':this.currentFilter().updates==='changed'?'目前没有尚未查看的标题变化。':this.currentFilter().updates==='missing'?(scannedForums?'当前已检查论坛中，没有未检测到的收藏。':'尚未检查过本服务器的论坛，请进入论坛频道点击更新。'):'此收藏夹在本服务器暂无记录。'}));
@@ -1543,7 +1602,7 @@ class ArchiveApp {
     };
     for(const r of records.slice(0,this.limit)) {
       const key=identity(r),title=r.customTitle??r.originalTitle;
-      const link=element('a',{class:'card-title'+(this.expanded.has(key)||!this.prefs.lines?' full':''),href:r.url,title,'aria-label':title,'data-focus':key+':open',text:title,onclick:()=>this.captureBookmarkScroll()});
+      const link=element('a',{class:'card-title'+(this.expanded.has(key)||!this.prefs.lines?' full':''),href:r.url,title,'aria-label':title,'data-focus':key+':open',text:title,onclick:event=>this.openBookmarkedPost(event,r)});
       const star=element('button',{class:'star',text:r.starred?'★':'☆','aria-label':'切换星标','aria-pressed':String(r.starred),onclick:this.safe(()=>this.store.patch(key,{starred:!this.store.records.get(key)?.starred}))});
       const when=element('span',{class:'post-age',title:r.titleUpdatedAt?'上次确认标题变化：'+new Date(r.titleUpdatedAt).toLocaleString():'尚未读取到标题变化时间',text:shortDate(r.titleUpdatedAt)});
       const more=element('button',{class:'more',text:'⋯','aria-label':'帖子更多操作',title:'更多操作','data-focus':key+':more',onclick:this.safe(()=>this.cardMenu(r))});
