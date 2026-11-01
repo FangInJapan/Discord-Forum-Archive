@@ -673,8 +673,7 @@ export class ArchiveApp {
               }controls.dock.value=this.prefs.dock;
             })}))),
         bookmarks:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'收藏与识别'},
-          group('收藏默认值',grid(select('defaultScope','新服务器默认范围',[['forum','本频道'],['server','全服务器']]),
-            select('defaultSort','新服务器默认排序',SORTS.map((value,i)=>[value,['最近收藏','最早收藏','最近修改','最早修改','标题 A–Z','标题 Z–A','星标优先'][i]])))),
+          group('收藏默认值',grid(select('defaultSort','默认排序',SORTS.map((value,i)=>[value,['最近收藏','最早收藏','最近修改','最早修改','标题 A–Z','标题 Z–A','星标优先'][i]])))),
           group('识别功能',check('autoFollow','自动记录已确认的原生关注'),
             check('debug','在控制台记录调试事件'))),
         about:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'关于'},
