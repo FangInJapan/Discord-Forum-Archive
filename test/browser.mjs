@@ -219,14 +219,20 @@ try {
       return r.top>bounds.top+8 && r.bottom<bounds.bottom-8;
     });
     if(!link)throw new Error('No visible bookmark link found for scroll regression');
-    link.addEventListener('click',e=>{
-      e.preventDefault();window.fixtureShowThread('333333333333333333','收藏链接跳转后的帖子');
-    },{once:true});
+    // Attach at the stable ShadowRoot rather than to a card that the
+    // reactive list may replace before Playwright dispatches the click.
+    const listener=e=>{
+      if(!e.target.closest?.('a.card-title'))return;
+      e.preventDefault();
+      app.root.removeEventListener('click',listener);
+      window.fixtureShowThread('333333333333333333','收藏链接跳转后的帖子');
+    };
+    app.root.addEventListener('click',listener);
     return {top:list.scrollTop,title:link.textContent};
   });
   assert.ok(clicked.top>100,'regression test requires real non-zero scroll offset');
   await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:clicked.title,exact:true}).click();
-  await page.waitForFunction(()=>window.fixtureApp.context.type==='thread'&&
+  await page.waitForFunction(()=>window.fixtureApp?.context.type==='thread'&&
     window.fixtureApp.context.threadId==='333333333333333333');
   await page.waitForTimeout(260);
   assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),clicked.top,
