@@ -227,6 +227,29 @@ export class ArchiveApp {
         JSON.stringify({guildId,top,query:this.query,limit:this.limit,at:Date.now()}));
     }catch{} // Disabled or full session storage must not block navigation.
   }
+  // A Discord SPA route change should update the selected bookmark in place.
+  // Rebuilding the whole list on each thread click would replace DOM nodes,
+  // interrupt pointer/focus state and make the panel appear to refresh.
+  currentPostIdentity(context=this.context) {
+    if(!this.store||!context?.guildId)return null;
+    const id=context.type==='thread'?context.threadId:
+      context.type==='unknown'?context.channelId:null;
+    if(!ID.test(id||''))return null;
+    const key=context.guildId+':'+id;
+    return this.store.records.has(key)?key:null;
+  }
+  highlightCurrentPost() {
+    if(!this.list?.querySelectorAll)return;
+    const selected=this.currentPostIdentity();
+    for(const card of this.list.querySelectorAll('article.compact-card[data-post-key]')){
+      const active=!!selected&&card.getAttribute('data-post-key')===selected;
+      card.classList.toggle('is-current-post',active);
+      const link=card.querySelector('a.card-title');
+      if(!link)continue;
+      if(active)link.setAttribute('aria-current','page');
+      else link.removeAttribute('aria-current');
+    }
+  }
   async navigate(c) {
     const previousGuild=this.context.guildId, nextGuild=c.guildId;
     const pending=this.bookmarkNavigationScroll;
@@ -241,8 +264,14 @@ export class ArchiveApp {
     if(nextGuild!==previousGuild && !(pending?.guildId===nextGuild&&Date.now()<pending.until)){
       this.query='';this.search.value='';this.limit=80;
     }
-    this.updateContext();this.renderList();this.layout();
-    this.list.scrollTop=nextGuild ? (this.scroll.get(nextGuild)??0) : 0;
+    this.updateContext();
+    if(nextGuild!==previousGuild){
+      this.renderList();
+      this.list.scrollTop=nextGuild ? (this.scroll.get(nextGuild)??0) : 0;
+    }else{
+      this.highlightCurrentPost();
+    }
+    this.layout();
     if(pending?.guildId===nextGuild&&this.profile){
       try{sessionStorage.removeItem(PREFIX+'scroll:'+this.profile.id);}catch{}
     }
@@ -597,10 +626,11 @@ export class ArchiveApp {
       const starColumn=element('div',{class:'card-side card-side-start'},star,when);
       const actionColumn=element('div',{class:'card-side card-side-end'},more,reload);
       if(r.changeUnread){link.title='标题已变化：'+(r.previousSeenTitle||'未知')+' → '+r.originalTitle;}
-      frag.append(element('article',{class:'card compact-card'+(r.changeUnread?' title-changed':''),...(r.changeUnread?{'aria-label':'标题近期发生变化'}:{})},starColumn,link,actionColumn));
+      frag.append(element('article',{class:'card compact-card'+(r.changeUnread?' title-changed':''),'data-post-key':key,...(r.changeUnread?{'aria-label':'标题近期发生变化'}:{})},starColumn,link,actionColumn));
     }
     if(records.length>this.limit)frag.append(element('button',{class:'pager',text:`继续显示（剩余 ${records.length-this.limit} 条）`,onclick:()=>{this.limit+=80;this.renderList();}}));
     this.list.replaceChildren(frag);this.list.scrollTop=oldScroll;
+    this.highlightCurrentPost();
     if(focusKey)[...this.list.querySelectorAll('[data-focus]')].find(el=>el.getAttribute('data-focus')===focusKey)?.focus({preventScroll:true});
     this.updateContext();
   }
