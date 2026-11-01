@@ -188,12 +188,12 @@ try {
   await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().forumId==='222222222222222222');
   await page.locator('#unrecognized').click();
   await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().type==='forum');
-  await page.getByRole('button',{name:'点击编辑服务器和论坛的显示名称'}).click();
+  await page.locator('.context').click();
   await page.getByRole('dialog',{name:'修改显示名称'}).getByRole('button',{name:'频道类型识别 / 修正'}).click();
   await page.getByRole('dialog',{name:'确认频道类型'}).getByRole('button',{name:'这不是论坛（纠正误识别）'}).click();
   await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().type!=='forum'&&
     window.fixtureApp.prefs.knownForums['111111111111111111:888888888888888888']?.kind==='not-forum');
-  await page.getByRole('button',{name:'点击编辑服务器和论坛的显示名称'}).click();
+  await page.locator('.context').click();
   await page.getByRole('dialog',{name:'修改显示名称'}).getByRole('button',{name:'频道类型识别 / 修正'}).click();
   await page.getByRole('dialog',{name:'确认频道类型'}).getByRole('button',{name:'确认当前频道是论坛'}).click();
   await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().type==='forum');
