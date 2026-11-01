@@ -30,7 +30,7 @@ export async function makeFixture() {
     main.append(list);
   }
   function showThread(id=T,title=longTitle){href='https://discord.com/channels/'+G+'/'+id;main.replaceChildren(element('header',{},element('h1',{text:title}),element('button',{id:'follow',text:'关注帖子',onclick:e=>{if(!fail)setTimeout(()=>e.target.textContent='取消关注',180);}})),element('p',{text:'这是模拟帖子内容。脚本仅使用可见标题和按钮状态。'}),element('div',{id:'discord-composer',role:'textbox',contenteditable:'true','aria-label':'Discord 帖子编辑器'}));}
-  showForum();const app=new ArchiveApp(storage,()=>href);app.start().catch(e=>log.textContent=e.stack);window.fixtureApp=app;
+  showForum();window.fixtureShowThread=showThread;const app=new ArchiveApp(storage,()=>href);app.start().catch(e=>log.textContent=e.stack);window.fixtureApp=app;
   // Simulate a Discord global shortcut handler that mistakes Shadow DOM's host
   // for a non-editable key target. Capture runs before the userscript's root.
   document.addEventListener('keydown',e=>{

@@ -59,7 +59,7 @@ export function isolatePanelEvents(root, host = root.host) {
 export class ArchiveApp {
   constructor(storage, href = ()=>location.href) {
     this.storage = storage; this.prefs = cleanPrefs(); this.context = {type:'unknown'}; this.profile = null; this.store = null;
-    this.query = ''; this.limit = 80; this.expanded = new Set(); this.scroll = new Map(); this.force = false; this.destroyed = false;
+    this.query = ''; this.limit = 80; this.expanded = new Set(); this.scroll = new Map(); this.bookmarkNavigationScroll = null; this.force = false; this.destroyed = false;
     this.href=href;this.cleanups = []; this.lastRouteKey = ''; this.modalClose = null; this.prefQueue = Promise.resolve(); this.revision = 0;
     this.log = event=> { if (this.prefs.debug) console.debug('[Forum Archive]',event); };
     this.safe = fn=> (...args)=> Promise.resolve().then(()=>fn(...args)).catch(e=>this.report(e));
@@ -183,20 +183,70 @@ export class ArchiveApp {
     const nextStore=new ArchiveStore(this.storage,profile.id,()=> {if(this.store===nextStore)this.changed();});
     await nextStore.refresh(); // Keep the previous library intact if loading fails.
     await this.storage.set(`${PREFIX}activeProfile`,profile.id);
-    this.profile=profile;this.prefs=nextPrefs;this.store=nextStore;this.revision++;this.query='';this.search.value='';this.expanded.clear();this.scroll.clear();
+    this.profile=profile;this.prefs=nextPrefs;this.store=nextStore;this.revision++;this.query='';this.search.value='';this.expanded.clear();this.scroll.clear();this.bookmarkNavigationScroll=null;
+    const resume=this.takeBookmarkScroll(profile.id);
+    if(resume){
+      this.scroll.set(resume.guildId,resume.top);
+      this.bookmarkNavigationScroll={guildId:resume.guildId,top:resume.top,until:Date.now()+5000};
+      this.query=resume.query;this.search.value=resume.query;this.limit=resume.limit;
+    }
     this.adapter.setKnownForums(this.prefs.knownForums);
-    this.force=false;this.changed();this.layout();this.applyTheme();this.adapter.scan();
+    this.force=false;this.changed();this.layout();this.applyTheme();
+    if(resume&&this.context.guildId===resume.guildId)this.list.scrollTop=resume.top;
+    this.adapter.scan();
   }
   changed() {
     this.adapter.seed(this.store?.records.values() || []);this.adapter.schedule();this.renderList();this.updateContext();
     if (this.store?.invalidCount) this.toast(`检测到 ${this.store.invalidCount} 条无法读取的变更，已保留原数据。请导出可读取记录并保留 Tampermonkey 备份。`,true);
   }
+  // Short-lived, same-tab checkpoint. Discord may use either SPA routing
+  // or a real page load for links inside the userscript's Shadow DOM.
+  takeBookmarkScroll(profileId) {
+    let raw=null;
+    try {
+      const key=PREFIX+'scroll:'+profileId;
+      raw=JSON.parse(sessionStorage.getItem(key)||'null');
+      sessionStorage.removeItem(key);
+    }catch{return null;}
+    if(!raw||!ID.test(raw.guildId||'')||!Number.isFinite(raw.top)||
+      raw.top<0||raw.top>10000000||!Number.isFinite(raw.at)||
+      Date.now()-raw.at>60000||Date.now()<raw.at)return null;
+    return {guildId:raw.guildId,top:raw.top,
+      query:typeof raw.query==='string'?raw.query.slice(0,500):'',
+      limit:Number.isSafeInteger(raw.limit)?Math.max(80,Math.min(10000,raw.limit)):80};
+  }
+  captureBookmarkScroll() {
+    if(!this.profile||!this.context.guildId||!this.list)return;
+    const top=this.list.scrollTop,guildId=this.context.guildId;
+    this.scroll.set(guildId,top);
+    // Preserve the click-time position if Discord updates its DOM before
+    // the route observer runs. Native link navigation may reload the page.
+    this.bookmarkNavigationScroll={guildId,top,until:Date.now()+5000};
+    try {
+      sessionStorage.setItem(PREFIX+'scroll:'+this.profile.id,
+        JSON.stringify({guildId,top,query:this.query,limit:this.limit,at:Date.now()}));
+    }catch{} // Disabled or full session storage must not block navigation.
+  }
   async navigate(c) {
-    const old=this.context, oldKey=`${old.guildId}:${old.forumId || old.channelId}`;
-    this.scroll.set(oldKey,this.list.scrollTop);
-    this.context=c; const key=`${c.guildId}:${c.forumId || c.channelId}`;
-    if(key!==oldKey) {this.query='';this.search.value='';this.limit=80;}
-    this.updateContext();this.renderList();this.layout();this.list.scrollTop=this.scroll.get(key)||0;
+    const previousGuild=this.context.guildId, nextGuild=c.guildId;
+    const pending=this.bookmarkNavigationScroll;
+    if(previousGuild && this.list){
+      const saved=pending?.guildId===previousGuild && Date.now()<pending.until ?
+        pending.top : this.list.scrollTop;
+      this.scroll.set(previousGuild,saved);
+    }
+    this.context=c;
+    // A post and its parent forum share the same server-wide bookmark view.
+    // Only a genuine server switch should reset the search and visible limit.
+    if(nextGuild!==previousGuild && !(pending?.guildId===nextGuild&&Date.now()<pending.until)){
+      this.query='';this.search.value='';this.limit=80;
+    }
+    this.updateContext();this.renderList();this.layout();
+    this.list.scrollTop=nextGuild ? (this.scroll.get(nextGuild)??0) : 0;
+    if(pending?.guildId===nextGuild&&this.profile){
+      try{sessionStorage.removeItem(PREFIX+'scroll:'+this.profile.id);}catch{}
+    }
+    this.bookmarkNavigationScroll=null;
     // Preserve a positively observed forum in the active local profile.
     // Manual correction to "not a forum" always wins.
     if(c.type==='forum' && c.forumEvidence && c.guildId && c.forumId && this.profile){
@@ -538,7 +588,7 @@ export class ArchiveApp {
     };
     for(const r of records.slice(0,this.limit)) {
       const key=identity(r),title=r.customTitle??r.originalTitle;
-      const link=element('a',{class:'card-title'+(this.expanded.has(key)||!this.prefs.lines?' full':''),href:r.url,title,'data-focus':key+':open',text:title});
+      const link=element('a',{class:'card-title'+(this.expanded.has(key)||!this.prefs.lines?' full':''),href:r.url,title,'data-focus':key+':open',text:title,onclick:()=>this.captureBookmarkScroll()});
       const star=element('button',{class:'star',text:r.starred?'★':'☆','aria-label':'切换星标','aria-pressed':String(r.starred),onclick:this.safe(()=>this.store.patch(key,{starred:!this.store.records.get(key)?.starred}))});
       const when=element('span',{class:'post-age',title:r.titleUpdatedAt?'上次确认标题变化：'+new Date(r.titleUpdatedAt).toLocaleString():'尚未读取到标题变化时间',text:shortDate(r.titleUpdatedAt)});
       const more=element('button',{class:'more',text:'⋯','aria-label':'帖子更多操作',title:'更多操作','data-focus':key+':more',onclick:this.safe(()=>this.cardMenu(r))});

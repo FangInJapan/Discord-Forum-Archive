@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ArchiveApp,isolatePanelEvents} from '../src/app.js';
-import {ArchiveStore,makeRecord,identity,cleanPrefs} from '../src/core.js';
+import {ArchiveStore,makeRecord,identity,cleanPrefs,PREFIX} from '../src/core.js';
 const G='111111111111111111',F='222222222222222222',T='333333333333333333';
 function app() {
   const data=new Map();const storage={get:async(k,d)=>structuredClone(data.has(k)?data.get(k):d),set:async(k,v)=>data.set(k,structuredClone(v)),list:async()=>[...data.keys()]};
@@ -122,4 +122,40 @@ test('manual scan records only verified forum; no posts means no missing-state u
   assert.deepEqual(a.prefs.scanResults[G+':'+F].missing,[U]);
   assert.equal(a.store.records.get(G+':'+T).changeUnread,true);
   assert.equal(a.store.records.get(G+':'+U).changeUnread,false);
+});
+
+test('bookmarked post navigation preserves scroll, search, and pagination within one server',async()=>{
+  const {a}=app();a.context={type:'forum',guildId:G,forumId:F};
+  a.list={scrollTop:456};a.search={value:'实验'};a.query='实验';a.limit=160;a.layout=()=>{};
+  await a.navigate({type:'thread',guildId:G,threadId:T,forumId:F,originalTitle:'帖子'});
+  assert.equal(a.list.scrollTop,456);
+  assert.equal(a.scroll.get(G),456);
+  assert.equal(a.query,'实验');assert.equal(a.search.value,'实验');assert.equal(a.limit,160);
+  a.list.scrollTop=710;
+  await a.navigate({type:'forum',guildId:G,forumId:'444444444444444444'});
+  assert.equal(a.list.scrollTop,710,'other channel in same server retains current scroll');
+  await a.navigate({type:'forum',guildId:'555555555555555555',forumId:'666666666666666666'});
+  assert.equal(a.list.scrollTop,0,'a different server starts at top');
+  assert.equal(a.query,'');assert.equal(a.limit,80);
+  a.list.scrollTop=100;
+  await a.navigate({type:'forum',guildId:G,forumId:F});
+  assert.equal(a.list.scrollTop,710,'returning to prior server restores previous position');
+});
+test('bookmark click checkpoint can be consumed after full reload without cross-tab storage',()=>{
+  const original=globalThis.sessionStorage,entries=new Map();
+  globalThis.sessionStorage={
+    setItem:(key,value)=>entries.set(key,value),
+    getItem:key=>entries.get(key)||null,
+    removeItem:key=>entries.delete(key)
+  };
+  try{
+    const {a}=app();a.context={type:'thread',guildId:G,threadId:T};
+    a.list={scrollTop:840};a.query='查看';a.limit=240;
+    a.captureBookmarkScroll();
+    const key=PREFIX+'scroll:'+a.profile.id;
+    assert.ok(entries.has(key));
+    const restored=app().a.takeBookmarkScroll(a.profile.id);
+    assert.deepEqual(restored,{guildId:G,top:840,query:'查看',limit:240});
+    assert.equal(entries.has(key),false,'checkpoint is one-shot');
+  }finally{globalThis.sessionStorage=original;}
 });
