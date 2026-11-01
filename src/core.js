@@ -262,7 +262,8 @@ export function validateKnownForums(input) {
   for(const [key,entry] of Object.entries(input).slice(0,1000)) {
     if(!/^\d{16,22}:\d{16,22}$/.test(key) || !entry || typeof entry!=='object' || Array.isArray(entry))continue;
     if(entry.source!=='manual' && entry.source!=='observed')continue;
-    result[key]={source:entry.source};
+    if(entry.kind!==undefined && entry.kind!=='forum' && entry.kind!=='not-forum')continue;
+    result[key]={source:entry.source,kind:entry.kind||'forum'};
   }
   return result;
 }
