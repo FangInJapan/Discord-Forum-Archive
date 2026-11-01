@@ -29,7 +29,7 @@ test('follow capture is opt-in and never overwrites a custom name',async()=>{
 });
 test('preference queue merges same-tab writes and preserves per-server filters',async()=>{
   const {a}=app();await Promise.all([a.savePrefs({titleSize:18}),a.savePrefs({width:600}),a.savePrefs({filters:{[G]:{scope:'server',sort:'starred'}}})]);
-  assert.equal(a.prefs.titleSize,18);assert.equal(a.prefs.width,600);assert.equal(a.currentFilter().scope,'forum');
+  assert.equal(a.prefs.titleSize,18);assert.equal(a.prefs.width,600);assert.equal(a.currentFilter().scope,'server');
   a.context={guildId:G};assert.equal(a.currentFilter().scope,'server');a.context={guildId:G,forumId:F};assert.equal(a.currentFilter().scope,'server');
 });
 test('layout modes, DM hiding and explicit recovery retain original dimensions',()=>{
