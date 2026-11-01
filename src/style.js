@@ -113,6 +113,36 @@ input[type=range]{accent-color:var(--accent)}
 .scope-toggle[aria-checked=true]::after{transform:translateX(9px)}
 
 
+/* Current thread: a stable, readable state; never move the list scroll.
+   Higher specificity than the generic hover, changed-title or glass rules. */
+.compact-card.is-current-post{
+  position:relative;
+  border-color:color-mix(in srgb,var(--accent) 72%,var(--line));
+  background:color-mix(in srgb,var(--accent) 13%,var(--card));
+  box-shadow:inset 3px 0 0 var(--accent),inset 0 1px 0 color-mix(in srgb,var(--fg) 10%,transparent),0 3px 14px color-mix(in srgb,var(--accent) 14%,transparent);
+}
+.compact-card.is-current-post:hover{
+  border-color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 18%,var(--card));
+}
+.compact-card.is-current-post .card-title{
+  color:var(--fg);font-weight:650;
+}
+.compact-card.is-current-post .card-title::after{
+  content:' · 正在浏览';
+  display:inline;
+  color:var(--accent);
+  font-size:10px;
+  font-weight:600;
+  white-space:nowrap;
+}
+:host([data-glass="on"]) .compact-card.is-current-post,
+:host([data-glass="on"]) .compact-card.is-current-post:hover{
+  border-color:color-mix(in srgb,var(--accent) 72%,var(--line));
+  background:linear-gradient(118deg,color-mix(in srgb,var(--accent) 15%,transparent),transparent 78%),var(--card);
+  box-shadow:inset 3px 0 0 var(--accent),inset 0 1px 0 var(--glass-glint),0 4px 16px color-mix(in srgb,var(--accent) 16%,transparent);
+}
+
 /* V1.2 design tokens: retain Discord-derived colors, distinguish structure before effects. */
 :host{
   --glass-border:color-mix(in srgb,var(--line) 56%,transparent);

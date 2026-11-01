@@ -227,8 +227,14 @@ try {
       // Playwright scrolls a link into view before clicking. Preserve the
       // position at the actual click, not the earlier setup scroll value.
       window.fixtureClickScroll=app.list.scrollTop;
+      window.fixtureCardBefore=app.list.querySelector('article.compact-card');
+      const article=e.target.closest('article.compact-card');
+      const key=article.getAttribute('data-post-key');
+      const record=app.store.records.get(key);
+      if(!record)throw new Error('Clicked post must be locally saved');
+      window.fixtureSelectedThread=record.threadId;
       app.root.removeEventListener('click',listener);
-      window.fixtureShowThread('333333333333333333','收藏链接跳转后的帖子');
+      window.fixtureShowThread(record.threadId,record.originalTitle);
     };
     app.root.addEventListener('click',listener);
     return {top:list.scrollTop,title:link.textContent};
@@ -236,8 +242,17 @@ try {
   assert.ok(clicked.top>100,'regression test requires real non-zero scroll offset');
   await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:clicked.title,exact:true}).click();
   await page.waitForFunction(()=>window.fixtureApp?.context.type==='thread'&&
-    window.fixtureApp.context.threadId==='333333333333333333');
+    window.fixtureApp.context.threadId===window.fixtureSelectedThread);
   await page.waitForTimeout(260);
+  await page.waitForFunction(()=>{
+    const app=window.fixtureApp;
+    const active=app.list.querySelector('article.compact-card.is-current-post');
+    return active?.getAttribute('data-post-key')==='111111111111111111:'+window.fixtureSelectedThread &&
+      active.querySelector('a.card-title')?.getAttribute('aria-current')==='page';
+  });
+  assert.equal(await page.evaluate(()=>window.fixtureCardBefore===window.fixtureApp.list.querySelector('article.compact-card')),true,
+    'same-server SPA navigation must retain the original bookmark card DOM nodes');
+  assert.equal(await page.locator('article.compact-card.is-current-post').count(),1,'exactly one bookmark must be highlighted');
   const actualClickScroll=await page.evaluate(()=>window.fixtureClickScroll);
   assert.ok(actualClickScroll>100,'click-time scroll must be non-zero');
   const afterClick=await page.evaluate(()=>{
@@ -250,8 +265,26 @@ try {
   await page.evaluate(()=>window.fixtureApp.sync());
   assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),actualClickScroll,
     'background sync must not reset scroll after navigation');
+  await page.evaluate(()=>{
+    const app=window.fixtureApp,other=[...app.store.records.values()].find(r=>
+      r.guildId==='111111111111111111'&&r.threadId!==window.fixtureSelectedThread&&
+      r.threadId.startsWith('880000000000'));
+    if(!other)throw new Error('Second saved post missing from synthetic fixture');
+    window.fixtureSecondThread=other.threadId;
+    window.fixtureShowThread(other.threadId,other.originalTitle);
+  });
+  await page.waitForFunction(()=>{
+    const app=window.fixtureApp;
+    const active=app.list.querySelector('article.compact-card.is-current-post');
+    return app.context.threadId===window.fixtureSecondThread&&
+      active?.getAttribute('data-post-key')==='111111111111111111:'+window.fixtureSecondThread;
+  });
+  assert.equal(await page.locator('article.compact-card.is-current-post').count(),1,'highlight must move to second opened saved thread');
+  assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),actualClickScroll,
+    'highlight change must not auto-scroll the list');
   await page.locator('#forum').click();
   await page.waitForFunction(()=>window.fixtureApp.context.type==='forum');
+  await page.waitForFunction(()=>window.fixtureApp.list.querySelector('article.compact-card.is-current-post')===null);
   const beforeReload=await page.evaluate(()=>{
     const app=window.fixtureApp;
     app.list.scrollTop=630;

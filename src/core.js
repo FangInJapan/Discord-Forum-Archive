@@ -1,5 +1,5 @@
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-export const VERSION = '1.3.2';
+export const VERSION = '1.3.3';
 export const SCHEMA = 1;
 export const PREFIX = 'dfa:v1:';
 export const ID = /^[0-9]{16,22}$/;
