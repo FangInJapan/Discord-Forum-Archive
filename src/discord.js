@@ -48,7 +48,7 @@ export class DiscordAdapter {
   forumRoot(main) {
     if(!main)return null;
     return main.querySelector('[data-list-id*="forum"],[data-forum-channel-id]') ||
-      (main.querySelector('article[class*="post"],[class*="forumPost"],[class*="postCard"],[class*="forumChannel"]') ? main : null) ||
+      (main.querySelector('[class*="forumPost"],[class*="postCard"],[class*="forumChannel"]') ? main : null) ||
       ([...main.querySelectorAll('button,[role="button"]')].some(b => visible(b) && CREATE.test(controlLabel(b))) ? main : null);
   }
   title(root) {
@@ -109,12 +109,17 @@ export class DiscordAdapter {
   collectVisiblePosts() {
     const c=this.inspect(),items=new Map();
     if(c.type==='thread'&&c.originalTitle)items.set(identity(c),c);
-    if(c.type==='forum'){
-      const root=this.forumRoot(this.main())||this.main();
-      // Forum DOM may use either canonical or parent-qualified links.
-      for(const link of root?.querySelectorAll('a[href*="/channels/"]')||[]){
+    // When a thread is open in Discord's sidebar, its forum cards may still
+    // be visible underneath it. Include those cards only with a known parent.
+    const route=routeOf(this.href());
+    const forumId=c.type==='forum'?c.forumId:(c.type==='thread'?
+      (c.forumId||(route.channelId&&route.channelId!==c.threadId?route.channelId:null)):null);
+    const root=this.forumRoot(this.main());
+    if(forumId && root){
+      const forumContext={type:'forum',guildId:c.guildId,forumId,forumName:c.forumName||'',guildName:c.guildName||''};
+      for(const link of root.querySelectorAll('a[href*="/channels/"]')){
         if(!visible(link))continue;
-        const info=this.postFromNode(link,c);
+        const info=this.postFromNode(link,forumContext);
         if(info?.originalTitle){const {card,...record}=info;items.set(identity(record),record);}
       }
     }
