@@ -240,8 +240,13 @@ try {
   await page.waitForTimeout(260);
   const actualClickScroll=await page.evaluate(()=>window.fixtureClickScroll);
   assert.ok(actualClickScroll>100,'click-time scroll must be non-zero');
-  assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),actualClickScroll,
-    'opening a bookmark must retain its actual click-time scroll position');
+  const afterClick=await page.evaluate(()=>{
+    const a=window.fixtureApp;
+    return {top:a.list.scrollTop,height:a.list.scrollHeight,viewport:a.list.clientHeight,
+      stored:a.scroll.get(a.context.guildId),rows:a.list.querySelectorAll('article.card').length};
+  });
+  assert.equal(afterClick.top,actualClickScroll,
+    'opening a bookmark must retain click-time scroll: '+JSON.stringify({afterClick,actualClickScroll}));
   await page.evaluate(()=>window.fixtureApp.sync());
   assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),actualClickScroll,
     'background sync must not reset scroll after navigation');
