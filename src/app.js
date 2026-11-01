@@ -109,7 +109,7 @@ export class ArchiveApp {
       const current = cleanPrefs(await this.storage.get(key,{})); const next = cleanPrefs({...current,...patch});
       await this.storage.set(key,next);
       if (JSON.stringify(await this.storage.get(key,{})) !== JSON.stringify(next)) throw new Error('设置保存校验失败。');
-      if (id === this.profile?.id) { this.prefs = next; this.layout(); this.applyTheme(); }
+      if (id === this.profile?.id) { this.prefs = next; if(Object.hasOwn(patch,'knownForums'))this.adapter?.setKnownForums(next.knownForums); this.layout(); this.applyTheme(); }
     });
     return this.prefQueue;
   }
@@ -184,6 +184,7 @@ export class ArchiveApp {
     await nextStore.refresh(); // Keep the previous library intact if loading fails.
     await this.storage.set(`${PREFIX}activeProfile`,profile.id);
     this.profile=profile;this.prefs=nextPrefs;this.store=nextStore;this.revision++;this.query='';this.search.value='';this.expanded.clear();this.scroll.clear();
+    this.adapter.setKnownForums(this.prefs.knownForums);
     this.force=false;this.changed();this.layout();this.applyTheme();this.adapter.scan();
   }
   changed() {
@@ -196,6 +197,14 @@ export class ArchiveApp {
     this.context=c; const key=`${c.guildId}:${c.forumId || c.channelId}`;
     if(key!==oldKey) {this.query='';this.search.value='';this.limit=80;}
     this.updateContext();this.renderList();this.layout();this.list.scrollTop=this.scroll.get(key)||0;
+    // Preserve a positively observed forum in the active local profile.
+    // Manual correction to "not a forum" always wins.
+    if(c.type==='forum' && c.forumEvidence && c.guildId && c.forumId && this.profile){
+      const id=c.guildId+':'+c.forumId;
+      if(!this.prefs.knownForums[id]){
+        await this.savePrefs({knownForums:{...this.prefs.knownForums,[id]:{source:'observed',kind:'forum'}}});
+      }
+    }
     if(c.type==='thread' && this.store) await this.store.observe(c);
   }
   currentFilter() {
@@ -292,12 +301,55 @@ export class ArchiveApp {
       const guild=element('input',{value:this.prefs.guildAliases[c.guildId]||'',maxlength:'120',placeholder:c.guildName||c.guildId,'aria-label':'自定义服务器名称'});
       const forum=element('input',{value:this.prefs.forumAliases[key]||'',maxlength:'120',placeholder:c.forumName||'当前频道','aria-label':'自定义论坛名称'});
       body.append(element('label',{text:'服务器名称'},guild),element('label',{text:'论坛名称'},forum),
+        element('button',{text:'频道类型识别 / 修正',onclick:()=>this.forumRecognitionDialog()}),
         element('button',{class:'primary',text:'保存',onclick:submit(async()=>{
           const ga={...this.prefs.guildAliases},fa={...this.prefs.forumAliases};
           if(guild.value.trim())ga[c.guildId]=guild.value.trim();else delete ga[c.guildId];
           if(fid){if(forum.value.trim())fa[key]=forum.value.trim();else delete fa[key];}
           await this.savePrefs({guildAliases:ga,forumAliases:fa});this.updateContext();close();
         })}));
+    });
+  }
+  // All type choices are profile-local. They never change Discord channel metadata.
+  async saveForumRecognition(guildId,channelId,kind) {
+    if(!this.profile||!ID.test(guildId||'')||!ID.test(channelId||''))throw new Error('当前链接没有有效的服务器与频道 ID。');
+    const key=guildId+':'+channelId,knownForums={...this.prefs.knownForums};
+    if(kind===null)delete knownForums[key];
+    else if(kind==='forum'||kind==='not-forum')knownForums[key]={kind,source:'manual'};
+    else throw new Error('频道类型不合法。');
+    await this.savePrefs({knownForums});
+    this.adapter.scan();
+    this.updateContext();
+  }
+  forumRecognitionDialog({scanAfter=false}={}) {
+    const route=this.adapter.inspect();
+    const guildId=route.guildId,channelId=route.channelId;
+    if(!guildId||!channelId){
+      this.toast('当前网址没有有效的服务器频道 ID。');return;
+    }
+    const key=guildId+':'+channelId;
+    const registered=this.prefs.knownForums[key];
+    this.dialog('确认频道类型',(body,close,submit)=>{
+      body.append(
+        element('p',{text:'Discord 的论坛和帖子可能使用相同格式的网址。这里仅记录当前频道类型，不修改 Discord。'}),
+        element('p',{class:'muted',text:'当前频道 ID：'+channelId}),
+        element('p',{class:'muted',text:registered?
+          ('本地识别：'+(registered.kind==='not-forum'?'不是论坛':'论坛')+
+           '（'+(registered.source==='manual'?'手动确认':'自动识别')+'）'):'本地尚未登记此频道类型。'}),
+        element('button',{class:'primary',text:'✓ 确认当前频道是论坛',onclick:submit(async()=>{
+          await this.saveForumRecognition(guildId,channelId,'forum');close();
+          if(scanAfter)await this.refreshVisibleTitles();
+          else this.toast('已记住该论坛，今后无需重复确认。');
+        })}),
+        element('button',{text:'这不是论坛（纠正误识别）',onclick:submit(async()=>{
+          await this.saveForumRecognition(guildId,channelId,'not-forum');close();
+          this.toast('已标记为非论坛；不会再被页面启发式自动覆盖。');
+        })}),
+        element('button',{text:'恢复自动识别',onclick:submit(async()=>{
+          await this.saveForumRecognition(guildId,channelId,null);close();
+          this.toast('已清除人工识别，恢复页面自动判断。');
+        })})
+      );
     });
   }
   sortDialog() {
@@ -331,7 +383,11 @@ export class ArchiveApp {
     if(!this.profile)return this.chooseProfile();
     const c=this.adapter.inspect();
     if(c.type!=='forum'||!c.guildId||!c.forumId){
-      this.toast('请进入需要检查的论坛频道，再点击更新。');
+      if(c.guildId&&c.channelId){
+        // Even a misclassified thread route can be corrected explicitly.
+        this.forumRecognitionDialog({scanAfter:true});return;
+      }
+      this.toast('当前不是服务器频道页面，请进入论坛后再更新。');
       return;
     }
     const scanKey=c.guildId+':'+c.forumId;
@@ -607,7 +663,10 @@ export class ArchiveApp {
           }
           await this.savePrefs({folders,
             guildAliases:{...imported.guildAliases,...this.prefs.guildAliases},
-            forumAliases:{...imported.forumAliases,...this.prefs.forumAliases}});
+            forumAliases:{...imported.forumAliases,...this.prefs.forumAliases},
+            knownForums:policy.value==='incoming'?
+              {...this.prefs.knownForums,...imported.knownForums}:
+              {...imported.knownForums,...this.prefs.knownForums}});
           const result=await mergeImport(store,imported.records,policy.value);status.textContent=`导入完成：新增 ${result.added} 条，更新 ${result.updated} 条。`;importBtn.disabled=true;imported=null;}
         catch(e){throw new Error(`导入中断，已完成的记录已保留。可安全重试。${e.message}`);}
       })});
@@ -621,7 +680,7 @@ export class ArchiveApp {
           await store.refresh();const blob=new Blob([JSON.stringify(exportData(store.records.values(),profile,this.prefs),null,2)],{type:'application/json'});
           const url=URL.createObjectURL(blob),a=element('a',{href:url,download:`Forum-Archive-${new Date().toISOString().slice(0,10)}.json`});this.root.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);status.textContent='已生成备份，请确认浏览器下载完成。';
         })}),element('h3',{text:'合并导入'}),file,policy,status,importBtn,
-        element('p',{class:'muted',text:'导入逐条写入，存储失败时可能部分完成，重试会去重。覆盖模式会明确替换已有名称、星标和归属；收藏时间保持本地值。备份不包含界面偏好。'}));
+        element('p',{class:'muted',text:'导入逐条写入，存储失败时可能部分完成，重试会去重。覆盖模式会明确替换已有名称、星标和归属；收藏时间保持本地值。备份包含已确认的论坛类型，但不包含界面偏好。'}));
     });
   }
   settings() {

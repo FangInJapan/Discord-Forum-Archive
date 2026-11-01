@@ -1,5 +1,5 @@
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-export const VERSION = '1.3.0';
+export const VERSION = '1.3.1';
 export const SCHEMA = 1;
 export const PREFIX = 'dfa:v1:';
 export const ID = /^[0-9]{16,22}$/;
@@ -11,7 +11,7 @@ export const DEFAULTS = Object.freeze({
   snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true, glass: true, motion: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
   width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {}, scanResults: {},
-  folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}
+  folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}, knownForums: {}
 });
 export function uid() { return crypto.randomUUID(); }
 export function canonical(guildId, threadId) { return `https://discord.com/channels/${guildId}/${threadId}`; }
@@ -207,7 +207,7 @@ export function exportData(records, profile, prefs = null) {
   const posts = [...records].map(validateRecord);
   const servers = [...new Map(posts.map(r => [r.guildId,{ guildId:r.guildId,name:r.guildName }])).values()];
   const forums = [...new Map(posts.filter(r=>r.forumId).map(r => [`${r.guildId}:${r.forumId}`,{guildId:r.guildId,forumId:r.forumId,name:r.forumName}])).values()];
-  return { format:'discord-forum-archive', schemaVersion:SCHEMA, exportedAt:Date.now(), profile:{id:profile.id,name:profile.name}, servers, forums, records:posts, folders:prefs?.folders || [{id:'default',name:'默认收藏夹'}], guildAliases:prefs?.guildAliases || {}, forumAliases:prefs?.forumAliases || {} };
+  return { format:'discord-forum-archive', schemaVersion:SCHEMA, exportedAt:Date.now(), profile:{id:profile.id,name:profile.name}, servers, forums, records:posts, folders:prefs?.folders || [{id:'default',name:'默认收藏夹'}], guildAliases:prefs?.guildAliases || {}, forumAliases:prefs?.forumAliases || {}, knownForums:validateKnownForums(prefs?.knownForums) };
 }
 export function parseImport(text) {
   if (typeof text !== 'string' || new TextEncoder().encode(text).length > 10*1024*1024) throw new Error('JSON 最大为 10 MiB。');
@@ -216,7 +216,7 @@ export function parseImport(text) {
   const records = new Map();
   for (const raw of data.records) { const r = validateRecord(raw); if (!records.has(identity(r))) records.set(identity(r),r); }
   return { records:[...records.values()], duplicates:data.records.length-records.size, profileName: typeof data.profile?.name === 'string' ? data.profile.name.slice(0,100) : '未命名',
-    folders:validateFolders(data.folders), guildAliases:validateAliases(data.guildAliases,false),forumAliases:validateAliases(data.forumAliases,true) };
+    folders:validateFolders(data.folders), guildAliases:validateAliases(data.guildAliases,false),forumAliases:validateAliases(data.forumAliases,true),knownForums:validateKnownForums(data.knownForums) };
 }
 export async function mergeImport(store, records, policy = 'preserve') {
   let added = 0, updated = 0;
@@ -254,6 +254,19 @@ export function validateAliases(input,forum=false) {
   }
   return result;
 }
+// Confirmed forum IDs are independent of the current Discord DOM and survive SPA transitions.
+// The registry is profile-local and never uses user tokens or Discord private APIs.
+export function validateKnownForums(input) {
+  const result={};
+  if(!input||typeof input!=='object'||Array.isArray(input))return result;
+  for(const [key,entry] of Object.entries(input).slice(0,1000)) {
+    if(!/^\d{16,22}:\d{16,22}$/.test(key) || !entry || typeof entry!=='object' || Array.isArray(entry))continue;
+    if(entry.source!=='manual' && entry.source!=='observed')continue;
+    if(entry.kind!==undefined && entry.kind!=='forum' && entry.kind!=='not-forum')continue;
+    result[key]={source:entry.source,kind:entry.kind||'forum'};
+  }
+  return result;
+}
 export function cleanPrefs(raw) {
   const p = { ...DEFAULTS };
   if (!raw || typeof raw !== 'object') return p;
@@ -280,6 +293,7 @@ export function cleanPrefs(raw) {
   if(raw.folderSelections&&typeof raw.folderSelections==='object')for(const [guild,id] of Object.entries(raw.folderSelections)) {
     if(ID.test(guild)&&p.folders.some(f=>f.id===id))p.folderSelections[guild]=id;
   }
+  p.knownForums=validateKnownForums(raw.knownForums);
   p.guildAliases=validateAliases(raw.guildAliases,false);
   p.forumAliases=validateAliases(raw.forumAliases,true);
   return p;

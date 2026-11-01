@@ -39,7 +39,7 @@ export function routeOf(href) {
 export class DiscordAdapter {
   constructor(doc, onContext, onFollow, isEnabled, log, href = ()=>location.href) {
     this.doc = doc; this.onContext = onContext; this.onFollow = onFollow; this.isEnabled = isEnabled; this.log = log;
-    this.context = {type:'unknown'}; this.links = new Map(); this.catalog = new Map(); this.knownThreads = new Map();
+    this.context = {type:'unknown'}; this.links = new Map(); this.catalog = new Map(); this.knownThreads = new Map(); this.savedForumRegistry = new Map();
     this.href=href;this.pending = null; this.lastHref = ''; this.signature = ''; this.timer = null; this.followSerial = 0;
     this.menuTarget = null; this.seenExisting = new Set();
     this.click = this.handleClick.bind(this); this.contextMenu = this.handleContextMenu.bind(this); this.scheduled = () => this.schedule();
@@ -115,7 +115,7 @@ export class DiscordAdapter {
     const route=routeOf(this.href());
     const forumId=c.type==='forum'?c.forumId:(c.type==='thread'?
       (c.forumId||(route.channelId&&route.channelId!==c.threadId?route.channelId:null)):null);
-    const root=this.forumRoot(this.main());
+    const root=this.forumRoot(this.main()) || (c.type==='forum'?this.main():null);
     if(forumId && root){
       const forumContext={type:'forum',guildId:c.guildId,forumId,forumName:c.forumName||'',guildName:c.guildName||''};
       for(const link of root.querySelectorAll('a[href*="/channels/"]')){
@@ -140,19 +140,37 @@ export class DiscordAdapter {
       if (r.forumId) this.catalog.set(`${r.guildId}:${r.forumId}`,{guildId:r.guildId,forumId:r.forumId,forumName:r.forumName,guildName:r.guildName});
     }
   }
+  setKnownForums(registry={}) {
+    this.savedForumRegistry=new Map(Object.entries(registry||{}));
+    if(this.observer)this.schedule();
+  }
+  forumRegistration(guildId,forumId) {
+    return this.savedForumRegistry.get(guildId+':'+forumId)||null;
+  }
   inspect() {
     const route = routeOf(this.href()), main = this.main();
     if (!route.guildId || !route.channelId) return route;
-    const root = this.forumRoot(main), knownForum = this.catalog.get(`${route.guildId}:${route.channelId}`);
-    // A selected thread sidebar gets priority over a forum list still visible underneath it.
-    const sidebar = [...this.doc.querySelectorAll('[class*="threadSidebar"],[data-thread-id]')].find(visible);
+    const root = this.forumRoot(main);
+    const registry=this.forumRegistration(route.guildId,route.channelId);
+    const explicitNotForum=registry?.kind==='not-forum';
+    const registeredForum=registry?.kind==='forum';
+    const knownForum=!explicitNotForum && (registeredForum ? {
+      guildId:route.guildId,forumId:route.channelId,forumName:''
+    } : this.catalog.get(route.guildId+':'+route.channelId));
+    // A thread selected in a visible side panel overrides the underlying forum.
+    const sidebar = [...this.doc.querySelectorAll('[class*="threadSidebar"],[role="complementary"][data-thread-id]')]
+      .find(el=>visible(el) && !el.closest('[class*="forumPost"],[class*="postCard"],article'));
     const candidate = new URL(this.href()).searchParams.get('thread') || sidebar?.getAttribute('data-thread-id');
     const candidateId = candidate && ID.test(candidate) ? candidate : null;
-    const known = this.knownThreads.get(`${route.guildId}:${candidateId || route.channelId}`);
-    const captured = this.links.get(`${route.guildId}:${candidateId || route.channelId}`);
+    const known = this.knownThreads.get(route.guildId+':'+(candidateId || route.channelId));
+    const captured = this.links.get(route.guildId+':'+(candidateId || route.channelId));
     const follows = this.controls().filter(b=>!b.closest('[role="menu"]') && (FOLLOW.test(controlLabel(b)) || UNFOLLOW.test(controlLabel(b))));
-    const threadMarkup = !!main?.querySelector('[data-thread-id],[class*="threadChat"]');
-    const isThread = !!(candidateId || known || captured || (follows.length && !root) || (threadMarkup && !root));
+    const threadMarkup = !!main?.querySelector('[class*="threadChat"],[data-list-id="chat-messages"],[id^="chat-messages"]');
+    // Explicit forum registration takes precedence over weak thread heuristics
+    // for the bare guild/channel route, but never over a selected thread ID.
+    const isThread=!!(candidateId || (!registeredForum && (
+      (known && !root) || captured || (follows.length && !root) || (threadMarkup && !root)
+    )));
     const guildAnchor = [...this.doc.querySelectorAll('nav a[aria-label],[role="tree"] a[aria-label]')].find(a=>a.getAttribute('href') === `/channels/${route.guildId}`);
     const guildName = guildAnchor?.getAttribute('aria-label') || known?.guildName || captured?.guildName || '';
     if (isThread) {
@@ -161,7 +179,11 @@ export class DiscordAdapter {
       return {...route,type:'thread',threadId,forumId:parent?.forumId || null,forumName:parent?.forumName || '',guildName,
         originalTitle:this.title(sidebar || main) || captured?.originalTitle || known?.originalTitle || '',url:canonical(route.guildId,threadId)};
     }
-    if (root || knownForum) return {...route,type:'forum',forumId:route.channelId,forumName:this.title(main) || knownForum?.forumName || route.channelId,guildName};
+    if (!explicitNotForum && (root || knownForum)) return {
+      ...route,type:'forum',forumId:route.channelId,
+      forumName:this.title(main) || knownForum?.forumName || route.channelId,guildName,
+      forumEvidence:!!root,forumRegistered:!!registeredForum,forumSource:registry?.source||null
+    };
     return {...route,type:'unknown',guildName};
   }
   schedule() { if(this.timer)return;this.timer = setTimeout(()=>{this.timer=null;this.scan();},180); }

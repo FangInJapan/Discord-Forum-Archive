@@ -81,3 +81,34 @@ test('forum cards resolve parent-qualified URLs without mistaking the forum ID f
   assert.equal(visibleForumPostLink('https://evil.example/channels/'+G+'/'+F+'/'+T,context),null);
   assert.equal(visibleForumPostLink('https://discord.com/channels/'+G+'/'+F+'/'+T,{...context,type:'thread'}),null);
 });
+
+test('saved manual forum identity survives missing DOM signals on identical URL shape',()=>{
+  const {adapter}=fake({forum:false});
+  adapter.setKnownForums({[G+':'+T]:{kind:'forum',source:'manual'}});
+  const result=adapter.inspect();
+  assert.equal(result.type,'forum');
+  assert.equal(result.forumId,T);
+  assert.equal(result.forumRegistered,true);
+  assert.equal(result.forumEvidence,false);
+  assert.equal(result.forumSource,'manual');
+});
+test('manual non-forum correction blocks stale catalog and forum markup',()=>{
+  const {adapter}=fake({forum:true});
+  adapter.catalog.set(G+':'+F,{guildId:G,forumId:F,forumName:'旧论坛'});
+  adapter.setKnownForums({[G+':'+F]:{kind:'not-forum',source:'manual'}});
+  assert.notEqual(adapter.inspect().type,'forum');
+});
+test('data-thread-id on a forum card must not impersonate a thread sidebar',()=>{
+  const {adapter}=fake({forum:true});
+  const previous=adapter.doc.querySelectorAll;
+  const card={getAttribute:()=>T,closest:()=>({}),getClientRects:()=>[{}]};
+  adapter.doc.querySelectorAll=selector=>selector.includes('threadSidebar')&&!selector.includes('main header')?[card]:previous(selector);
+  assert.equal(adapter.inspect().type,'forum');
+});
+test('real sidebar thread selection outranks a manually registered forum',()=>{
+  const {adapter}=fake({forum:true,query:'?thread='+T,sidebar:true});
+  adapter.setKnownForums({[G+':'+F]:{kind:'forum',source:'manual'}});
+  const result=adapter.inspect();
+  assert.equal(result.type,'thread');
+  assert.equal(result.threadId,T);
+});

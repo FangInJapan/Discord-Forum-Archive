@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Forum Archive
 // @namespace    https://github.com/FangInJapan/Discord-Forum-Archive
-// @version      1.3.0
+// @version      1.3.1
 // @description  独立保存 Discord 论坛帖子收藏；支持分类、长标题、备份和可调面板。
 // @author       FangInJapan
 // @match        https://discord.com/channels/*
@@ -26,7 +26,7 @@
 
 // ---- core.js ----
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const SCHEMA = 1;
 const PREFIX = 'dfa:v1:';
 const ID = /^[0-9]{16,22}$/;
@@ -38,7 +38,7 @@ const DEFAULTS = Object.freeze({
   snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true, glass: true, motion: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
   width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {}, scanResults: {},
-  folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}
+  folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}, knownForums: {}
 });
 function uid() { return crypto.randomUUID(); }
 function canonical(guildId, threadId) { return `https://discord.com/channels/${guildId}/${threadId}`; }
@@ -234,7 +234,7 @@ function exportData(records, profile, prefs = null) {
   const posts = [...records].map(validateRecord);
   const servers = [...new Map(posts.map(r => [r.guildId,{ guildId:r.guildId,name:r.guildName }])).values()];
   const forums = [...new Map(posts.filter(r=>r.forumId).map(r => [`${r.guildId}:${r.forumId}`,{guildId:r.guildId,forumId:r.forumId,name:r.forumName}])).values()];
-  return { format:'discord-forum-archive', schemaVersion:SCHEMA, exportedAt:Date.now(), profile:{id:profile.id,name:profile.name}, servers, forums, records:posts, folders:prefs?.folders || [{id:'default',name:'默认收藏夹'}], guildAliases:prefs?.guildAliases || {}, forumAliases:prefs?.forumAliases || {} };
+  return { format:'discord-forum-archive', schemaVersion:SCHEMA, exportedAt:Date.now(), profile:{id:profile.id,name:profile.name}, servers, forums, records:posts, folders:prefs?.folders || [{id:'default',name:'默认收藏夹'}], guildAliases:prefs?.guildAliases || {}, forumAliases:prefs?.forumAliases || {}, knownForums:validateKnownForums(prefs?.knownForums) };
 }
 function parseImport(text) {
   if (typeof text !== 'string' || new TextEncoder().encode(text).length > 10*1024*1024) throw new Error('JSON 最大为 10 MiB。');
@@ -243,7 +243,7 @@ function parseImport(text) {
   const records = new Map();
   for (const raw of data.records) { const r = validateRecord(raw); if (!records.has(identity(r))) records.set(identity(r),r); }
   return { records:[...records.values()], duplicates:data.records.length-records.size, profileName: typeof data.profile?.name === 'string' ? data.profile.name.slice(0,100) : '未命名',
-    folders:validateFolders(data.folders), guildAliases:validateAliases(data.guildAliases,false),forumAliases:validateAliases(data.forumAliases,true) };
+    folders:validateFolders(data.folders), guildAliases:validateAliases(data.guildAliases,false),forumAliases:validateAliases(data.forumAliases,true),knownForums:validateKnownForums(data.knownForums) };
 }
 async function mergeImport(store, records, policy = 'preserve') {
   let added = 0, updated = 0;
@@ -281,6 +281,19 @@ function validateAliases(input,forum=false) {
   }
   return result;
 }
+// Confirmed forum IDs are independent of the current Discord DOM and survive SPA transitions.
+// The registry is profile-local and never uses user tokens or Discord private APIs.
+function validateKnownForums(input) {
+  const result={};
+  if(!input||typeof input!=='object'||Array.isArray(input))return result;
+  for(const [key,entry] of Object.entries(input).slice(0,1000)) {
+    if(!/^\d{16,22}:\d{16,22}$/.test(key) || !entry || typeof entry!=='object' || Array.isArray(entry))continue;
+    if(entry.source!=='manual' && entry.source!=='observed')continue;
+    if(entry.kind!==undefined && entry.kind!=='forum' && entry.kind!=='not-forum')continue;
+    result[key]={source:entry.source,kind:entry.kind||'forum'};
+  }
+  return result;
+}
 function cleanPrefs(raw) {
   const p = { ...DEFAULTS };
   if (!raw || typeof raw !== 'object') return p;
@@ -307,6 +320,7 @@ function cleanPrefs(raw) {
   if(raw.folderSelections&&typeof raw.folderSelections==='object')for(const [guild,id] of Object.entries(raw.folderSelections)) {
     if(ID.test(guild)&&p.folders.some(f=>f.id===id))p.folderSelections[guild]=id;
   }
+  p.knownForums=validateKnownForums(raw.knownForums);
   p.guildAliases=validateAliases(raw.guildAliases,false);
   p.forumAliases=validateAliases(raw.forumAliases,true);
   return p;
@@ -364,7 +378,7 @@ function routeOf(href) {
 class DiscordAdapter {
   constructor(doc, onContext, onFollow, isEnabled, log, href = ()=>location.href) {
     this.doc = doc; this.onContext = onContext; this.onFollow = onFollow; this.isEnabled = isEnabled; this.log = log;
-    this.context = {type:'unknown'}; this.links = new Map(); this.catalog = new Map(); this.knownThreads = new Map();
+    this.context = {type:'unknown'}; this.links = new Map(); this.catalog = new Map(); this.knownThreads = new Map(); this.savedForumRegistry = new Map();
     this.href=href;this.pending = null; this.lastHref = ''; this.signature = ''; this.timer = null; this.followSerial = 0;
     this.menuTarget = null; this.seenExisting = new Set();
     this.click = this.handleClick.bind(this); this.contextMenu = this.handleContextMenu.bind(this); this.scheduled = () => this.schedule();
@@ -440,7 +454,7 @@ class DiscordAdapter {
     const route=routeOf(this.href());
     const forumId=c.type==='forum'?c.forumId:(c.type==='thread'?
       (c.forumId||(route.channelId&&route.channelId!==c.threadId?route.channelId:null)):null);
-    const root=this.forumRoot(this.main());
+    const root=this.forumRoot(this.main()) || (c.type==='forum'?this.main():null);
     if(forumId && root){
       const forumContext={type:'forum',guildId:c.guildId,forumId,forumName:c.forumName||'',guildName:c.guildName||''};
       for(const link of root.querySelectorAll('a[href*="/channels/"]')){
@@ -465,19 +479,37 @@ class DiscordAdapter {
       if (r.forumId) this.catalog.set(`${r.guildId}:${r.forumId}`,{guildId:r.guildId,forumId:r.forumId,forumName:r.forumName,guildName:r.guildName});
     }
   }
+  setKnownForums(registry={}) {
+    this.savedForumRegistry=new Map(Object.entries(registry||{}));
+    if(this.observer)this.schedule();
+  }
+  forumRegistration(guildId,forumId) {
+    return this.savedForumRegistry.get(guildId+':'+forumId)||null;
+  }
   inspect() {
     const route = routeOf(this.href()), main = this.main();
     if (!route.guildId || !route.channelId) return route;
-    const root = this.forumRoot(main), knownForum = this.catalog.get(`${route.guildId}:${route.channelId}`);
-    // A selected thread sidebar gets priority over a forum list still visible underneath it.
-    const sidebar = [...this.doc.querySelectorAll('[class*="threadSidebar"],[data-thread-id]')].find(visible);
+    const root = this.forumRoot(main);
+    const registry=this.forumRegistration(route.guildId,route.channelId);
+    const explicitNotForum=registry?.kind==='not-forum';
+    const registeredForum=registry?.kind==='forum';
+    const knownForum=!explicitNotForum && (registeredForum ? {
+      guildId:route.guildId,forumId:route.channelId,forumName:''
+    } : this.catalog.get(route.guildId+':'+route.channelId));
+    // A thread selected in a visible side panel overrides the underlying forum.
+    const sidebar = [...this.doc.querySelectorAll('[class*="threadSidebar"],[role="complementary"][data-thread-id]')]
+      .find(el=>visible(el) && !el.closest('[class*="forumPost"],[class*="postCard"],article'));
     const candidate = new URL(this.href()).searchParams.get('thread') || sidebar?.getAttribute('data-thread-id');
     const candidateId = candidate && ID.test(candidate) ? candidate : null;
-    const known = this.knownThreads.get(`${route.guildId}:${candidateId || route.channelId}`);
-    const captured = this.links.get(`${route.guildId}:${candidateId || route.channelId}`);
+    const known = this.knownThreads.get(route.guildId+':'+(candidateId || route.channelId));
+    const captured = this.links.get(route.guildId+':'+(candidateId || route.channelId));
     const follows = this.controls().filter(b=>!b.closest('[role="menu"]') && (FOLLOW.test(controlLabel(b)) || UNFOLLOW.test(controlLabel(b))));
-    const threadMarkup = !!main?.querySelector('[data-thread-id],[class*="threadChat"]');
-    const isThread = !!(candidateId || known || captured || (follows.length && !root) || (threadMarkup && !root));
+    const threadMarkup = !!main?.querySelector('[class*="threadChat"],[data-list-id="chat-messages"],[id^="chat-messages"]');
+    // Explicit forum registration takes precedence over weak thread heuristics
+    // for the bare guild/channel route, but never over a selected thread ID.
+    const isThread=!!(candidateId || (!registeredForum && (
+      (known && !root) || captured || (follows.length && !root) || (threadMarkup && !root)
+    )));
     const guildAnchor = [...this.doc.querySelectorAll('nav a[aria-label],[role="tree"] a[aria-label]')].find(a=>a.getAttribute('href') === `/channels/${route.guildId}`);
     const guildName = guildAnchor?.getAttribute('aria-label') || known?.guildName || captured?.guildName || '';
     if (isThread) {
@@ -486,7 +518,11 @@ class DiscordAdapter {
       return {...route,type:'thread',threadId,forumId:parent?.forumId || null,forumName:parent?.forumName || '',guildName,
         originalTitle:this.title(sidebar || main) || captured?.originalTitle || known?.originalTitle || '',url:canonical(route.guildId,threadId)};
     }
-    if (root || knownForum) return {...route,type:'forum',forumId:route.channelId,forumName:this.title(main) || knownForum?.forumName || route.channelId,guildName};
+    if (!explicitNotForum && (root || knownForum)) return {
+      ...route,type:'forum',forumId:route.channelId,
+      forumName:this.title(main) || knownForum?.forumName || route.channelId,guildName,
+      forumEvidence:!!root,forumRegistered:!!registeredForum,forumSource:registry?.source||null
+    };
     return {...route,type:'unknown',guildName};
   }
   schedule() { if(this.timer)return;this.timer = setTimeout(()=>{this.timer=null;this.scan();},180); }
@@ -969,7 +1005,7 @@ class ArchiveApp {
       const current = cleanPrefs(await this.storage.get(key,{})); const next = cleanPrefs({...current,...patch});
       await this.storage.set(key,next);
       if (JSON.stringify(await this.storage.get(key,{})) !== JSON.stringify(next)) throw new Error('设置保存校验失败。');
-      if (id === this.profile?.id) { this.prefs = next; this.layout(); this.applyTheme(); }
+      if (id === this.profile?.id) { this.prefs = next; if(Object.hasOwn(patch,'knownForums'))this.adapter?.setKnownForums(next.knownForums); this.layout(); this.applyTheme(); }
     });
     return this.prefQueue;
   }
@@ -1044,6 +1080,7 @@ class ArchiveApp {
     await nextStore.refresh(); // Keep the previous library intact if loading fails.
     await this.storage.set(`${PREFIX}activeProfile`,profile.id);
     this.profile=profile;this.prefs=nextPrefs;this.store=nextStore;this.revision++;this.query='';this.search.value='';this.expanded.clear();this.scroll.clear();
+    this.adapter.setKnownForums(this.prefs.knownForums);
     this.force=false;this.changed();this.layout();this.applyTheme();this.adapter.scan();
   }
   changed() {
@@ -1056,6 +1093,14 @@ class ArchiveApp {
     this.context=c; const key=`${c.guildId}:${c.forumId || c.channelId}`;
     if(key!==oldKey) {this.query='';this.search.value='';this.limit=80;}
     this.updateContext();this.renderList();this.layout();this.list.scrollTop=this.scroll.get(key)||0;
+    // Preserve a positively observed forum in the active local profile.
+    // Manual correction to "not a forum" always wins.
+    if(c.type==='forum' && c.forumEvidence && c.guildId && c.forumId && this.profile){
+      const id=c.guildId+':'+c.forumId;
+      if(!this.prefs.knownForums[id]){
+        await this.savePrefs({knownForums:{...this.prefs.knownForums,[id]:{source:'observed',kind:'forum'}}});
+      }
+    }
     if(c.type==='thread' && this.store) await this.store.observe(c);
   }
   currentFilter() {
@@ -1152,12 +1197,55 @@ class ArchiveApp {
       const guild=element('input',{value:this.prefs.guildAliases[c.guildId]||'',maxlength:'120',placeholder:c.guildName||c.guildId,'aria-label':'自定义服务器名称'});
       const forum=element('input',{value:this.prefs.forumAliases[key]||'',maxlength:'120',placeholder:c.forumName||'当前频道','aria-label':'自定义论坛名称'});
       body.append(element('label',{text:'服务器名称'},guild),element('label',{text:'论坛名称'},forum),
+        element('button',{text:'频道类型识别 / 修正',onclick:()=>this.forumRecognitionDialog()}),
         element('button',{class:'primary',text:'保存',onclick:submit(async()=>{
           const ga={...this.prefs.guildAliases},fa={...this.prefs.forumAliases};
           if(guild.value.trim())ga[c.guildId]=guild.value.trim();else delete ga[c.guildId];
           if(fid){if(forum.value.trim())fa[key]=forum.value.trim();else delete fa[key];}
           await this.savePrefs({guildAliases:ga,forumAliases:fa});this.updateContext();close();
         })}));
+    });
+  }
+  // All type choices are profile-local. They never change Discord channel metadata.
+  async saveForumRecognition(guildId,channelId,kind) {
+    if(!this.profile||!ID.test(guildId||'')||!ID.test(channelId||''))throw new Error('当前链接没有有效的服务器与频道 ID。');
+    const key=guildId+':'+channelId,knownForums={...this.prefs.knownForums};
+    if(kind===null)delete knownForums[key];
+    else if(kind==='forum'||kind==='not-forum')knownForums[key]={kind,source:'manual'};
+    else throw new Error('频道类型不合法。');
+    await this.savePrefs({knownForums});
+    this.adapter.scan();
+    this.updateContext();
+  }
+  forumRecognitionDialog({scanAfter=false}={}) {
+    const route=this.adapter.inspect();
+    const guildId=route.guildId,channelId=route.channelId;
+    if(!guildId||!channelId){
+      this.toast('当前网址没有有效的服务器频道 ID。');return;
+    }
+    const key=guildId+':'+channelId;
+    const registered=this.prefs.knownForums[key];
+    this.dialog('确认频道类型',(body,close,submit)=>{
+      body.append(
+        element('p',{text:'Discord 的论坛和帖子可能使用相同格式的网址。这里仅记录当前频道类型，不修改 Discord。'}),
+        element('p',{class:'muted',text:'当前频道 ID：'+channelId}),
+        element('p',{class:'muted',text:registered?
+          ('本地识别：'+(registered.kind==='not-forum'?'不是论坛':'论坛')+
+           '（'+(registered.source==='manual'?'手动确认':'自动识别')+'）'):'本地尚未登记此频道类型。'}),
+        element('button',{class:'primary',text:'✓ 确认当前频道是论坛',onclick:submit(async()=>{
+          await this.saveForumRecognition(guildId,channelId,'forum');close();
+          if(scanAfter)await this.refreshVisibleTitles();
+          else this.toast('已记住该论坛，今后无需重复确认。');
+        })}),
+        element('button',{text:'这不是论坛（纠正误识别）',onclick:submit(async()=>{
+          await this.saveForumRecognition(guildId,channelId,'not-forum');close();
+          this.toast('已标记为非论坛；不会再被页面启发式自动覆盖。');
+        })}),
+        element('button',{text:'恢复自动识别',onclick:submit(async()=>{
+          await this.saveForumRecognition(guildId,channelId,null);close();
+          this.toast('已清除人工识别，恢复页面自动判断。');
+        })})
+      );
     });
   }
   sortDialog() {
@@ -1191,7 +1279,11 @@ class ArchiveApp {
     if(!this.profile)return this.chooseProfile();
     const c=this.adapter.inspect();
     if(c.type!=='forum'||!c.guildId||!c.forumId){
-      this.toast('请进入需要检查的论坛频道，再点击更新。');
+      if(c.guildId&&c.channelId){
+        // Even a misclassified thread route can be corrected explicitly.
+        this.forumRecognitionDialog({scanAfter:true});return;
+      }
+      this.toast('当前不是服务器频道页面，请进入论坛后再更新。');
       return;
     }
     const scanKey=c.guildId+':'+c.forumId;
@@ -1467,7 +1559,10 @@ class ArchiveApp {
           }
           await this.savePrefs({folders,
             guildAliases:{...imported.guildAliases,...this.prefs.guildAliases},
-            forumAliases:{...imported.forumAliases,...this.prefs.forumAliases}});
+            forumAliases:{...imported.forumAliases,...this.prefs.forumAliases},
+            knownForums:policy.value==='incoming'?
+              {...this.prefs.knownForums,...imported.knownForums}:
+              {...imported.knownForums,...this.prefs.knownForums}});
           const result=await mergeImport(store,imported.records,policy.value);status.textContent=`导入完成：新增 ${result.added} 条，更新 ${result.updated} 条。`;importBtn.disabled=true;imported=null;}
         catch(e){throw new Error(`导入中断，已完成的记录已保留。可安全重试。${e.message}`);}
       })});
@@ -1481,7 +1576,7 @@ class ArchiveApp {
           await store.refresh();const blob=new Blob([JSON.stringify(exportData(store.records.values(),profile,this.prefs),null,2)],{type:'application/json'});
           const url=URL.createObjectURL(blob),a=element('a',{href:url,download:`Forum-Archive-${new Date().toISOString().slice(0,10)}.json`});this.root.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);status.textContent='已生成备份，请确认浏览器下载完成。';
         })}),element('h3',{text:'合并导入'}),file,policy,status,importBtn,
-        element('p',{class:'muted',text:'导入逐条写入，存储失败时可能部分完成，重试会去重。覆盖模式会明确替换已有名称、星标和归属；收藏时间保持本地值。备份不包含界面偏好。'}));
+        element('p',{class:'muted',text:'导入逐条写入，存储失败时可能部分完成，重试会去重。覆盖模式会明确替换已有名称、星标和归属；收藏时间保持本地值。备份包含已确认的论坛类型，但不包含界面偏好。'}));
     });
   }
   settings() {
