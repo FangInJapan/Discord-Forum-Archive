@@ -81,7 +81,8 @@ export class DiscordAdapter {
       if(!parsed)continue;
       // A card's heading is preferable to link text, which may contain
       // preview messages, button labels, or other UI content.
-      const heading=card?.querySelector('h2,h3,h4,[role="heading"],[data-testid*="post-title"],[class*="postTitle"],[class*="threadTitle"],[class*="titleText"]');
+      const scope=card||link;
+      const heading=scope.querySelector('h2,h3,h4,[role="heading"],[data-testid*="post-title"],[class*="postTitle"],[class*="threadTitle"],[class*="titleText"],[class*="title_"]');
       const title=normalizeThreadTitle(
         (heading&&visible(heading)?heading.textContent:'') ||
         link.getAttribute('aria-label') || link.getAttribute('title') ||
