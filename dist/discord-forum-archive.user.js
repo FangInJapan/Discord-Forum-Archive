@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Forum Archive
 // @namespace    https://github.com/FangInJapan/Discord-Forum-Archive
-// @version      1.2.1
+// @version      1.3.0
 // @description  独立保存 Discord 论坛帖子收藏；支持分类、长标题、备份和可调面板。
 // @author       FangInJapan
 // @match        https://discord.com/channels/*
@@ -26,7 +26,7 @@
 
 // ---- core.js ----
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-const VERSION = '1.2.1';
+const VERSION = '1.3.0';
 const SCHEMA = 1;
 const PREFIX = 'dfa:v1:';
 const ID = /^[0-9]{16,22}$/;
@@ -37,7 +37,7 @@ const DEFAULTS = Object.freeze({
   theme: 'discord', titleSize: 15, uiSize: 13, lines: 4, density: 'standard',
   snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true, glass: true, motion: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
-  width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {},
+  width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {}, scanResults: {},
   folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}
 });
 function uid() { return crypto.randomUUID(); }
@@ -199,11 +199,22 @@ class ArchiveStore {
     patch.lastObservedAt = Date.now(); return this.patch(identity(r),patch);
   }
 }
-function selectRecords(records, { guildId, forumId, scope = 'forum', collectionId = null, updates = 'all', query = '', sort = 'saved-desc' }) {
+// Return IDs absent from the *currently rendered* active forum card sample.
+// A missing ID means "not detected in this scan", never deleted or inaccessible.
+function compareVisibleForum(records,{guildId,forumId,visibleThreadIds,checkedAt=Date.now()}) {
+  if(!ID.test(guildId||'')||!ID.test(forumId||''))throw new Error('请进入可识别的论坛频道。');
+  const visible=new Set([...visibleThreadIds].filter(id=>typeof id==='string'&&ID.test(id)));
+  if(!visible.size)throw new Error('当前没有可识别的活跃帖子卡片，未生成扫描记录。');
+  const scoped=[...records].filter(r=>r.guildId===guildId&&r.forumId===forumId);
+  return {checkedAt,visibleCount:visible.size,matchedCount:scoped.filter(r=>visible.has(r.threadId)).length,
+    missing:scoped.filter(r=>!visible.has(r.threadId)).map(r=>r.threadId)};
+}
+function selectRecords(records, { guildId, forumId, scope = 'forum', collectionId = null, updates = 'all', missingIds = new Set(), query = '', sort = 'saved-desc' }) {
   const q = query.normalize('NFKC').toLocaleLowerCase();
   const result = [...records].filter(r => r.guildId === guildId && (scope === 'server' || r.forumId === (forumId ?? null)) &&
     (collectionId === null || (r.collectionId || 'default') === collectionId) &&
     (updates !== 'changed' || r.changeUnread === true) &&
+    (updates !== 'missing' || missingIds.has(identity(r))) &&
     [r.customTitle || '',r.originalTitle,r.forumName].some(s => s.normalize('NFKC').toLocaleLowerCase().includes(q)));
   const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
   result.sort((a,b) => {
@@ -278,7 +289,19 @@ function cleanPrefs(raw) {
   for (const [k,min,max] of [['titleSize',12,22],['uiSize',11,18],['width',300,760],['height',240,2000],['x',0,1],['y',0,1]]) if (typeof raw[k] === 'number' && Number.isFinite(raw[k])) p[k] = Math.max(min,Math.min(max,raw[k]));
   if ([0,1,2,3,4].includes(raw.lines)) p.lines = raw.lines;
   p.filters = {};
-  if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:f.scope,sort:f.sort,updates:f.updates==='changed'?'changed':'all'};
+  if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:'server',sort:f.sort,updates:['all','changed','missing'].includes(f.updates)?f.updates:'all'};
+  // Manual scans cover only the forum that was actually shown in Discord.
+  // Never infer deletion/invalidity from absence in a partially loaded list.
+  p.scanResults={};
+  if(raw.scanResults && typeof raw.scanResults==='object' && !Array.isArray(raw.scanResults)){
+    for(const [key,scan] of Object.entries(raw.scanResults).slice(-500)){
+      if(!/^\d{16,22}:\d{16,22}$/.test(key)||!scan||typeof scan!=='object')continue;
+      if(!Number.isSafeInteger(scan.checkedAt)||scan.checkedAt<0||!Number.isSafeInteger(scan.visibleCount)||scan.visibleCount<1)continue;
+      const missing=Array.isArray(scan.missing) ? [...new Set(scan.missing.filter(id=>typeof id==='string'&&ID.test(id)))].slice(0,10000) : [];
+      p.scanResults[key]={checkedAt:scan.checkedAt,visibleCount:scan.visibleCount,
+        matchedCount:Number.isSafeInteger(scan.matchedCount)&&scan.matchedCount>=0?scan.matchedCount:0,missing};
+    }
+  }
   p.folders=validateFolders(raw.folders);
   p.folderSelections={};
   if(raw.folderSelections&&typeof raw.folderSelections==='object')for(const [guild,id] of Object.entries(raw.folderSelections)) {
@@ -811,6 +834,29 @@ input[type=range]{accent-color:var(--accent)}
 }
 :host([data-motion="off"]) *, :host([data-motion="off"]) *::before,:host([data-motion="off"]) *::after{animation:none!important;transition:none!important}
 
+/* Three-state iOS-inspired segmented picker: scope is the entire current server. */
+.filters{display:grid;grid-template-columns:minmax(0,1fr) 32px;gap:6px}
+.filter-segments{grid-column:1/-1}
+.filters .collection-select{grid-column:1;min-width:0}
+.filters .sort-slot{grid-column:2}
+.filter-segments{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;min-width:0;
+ padding:3px;border:1px solid var(--glass-border);border-radius:12px;
+ background:color-mix(in srgb,var(--card) 88%,var(--bg))}
+.filter-segments .filter-segment{
+ display:flex;align-items:center;justify-content:center;min-width:0;min-height:27px;
+ padding:4px 3px;border:1px solid transparent;border-radius:9px;
+ background:transparent;color:var(--muted);font-size:11px;font-weight:500;white-space:nowrap;
+ transition:background-color 180ms ease,color 180ms ease,box-shadow 180ms ease}
+.filter-segments .filter-segment[aria-pressed="true"]{
+ color:var(--fg);font-weight:600;background:color-mix(in srgb,var(--accent) 13%,var(--card));
+ border-color:color-mix(in srgb,var(--accent) 30%,var(--line));
+ box-shadow:0 2px 8px #0002,inset 0 1px 0 color-mix(in srgb,var(--fg) 12%,transparent)}
+.filter-segments .filter-segment:not([aria-pressed="true"]):hover{background:var(--hover);color:var(--fg)}
+.filter-segments .filter-segment:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media(max-width:390px){
+ .filter-segments .filter-segment{font-size:10px;padding:3px 1px}
+}
+
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}*::before,*::after{transition:none!important;animation:none!important}}`;
 
 
@@ -1013,11 +1059,11 @@ class ArchiveApp {
     if(c.type==='thread' && this.store) await this.store.observe(c);
   }
   currentFilter() {
-    return {...{scope:this.prefs.defaultScope,sort:this.prefs.defaultSort,updates:'all'},...(this.prefs.filters[this.context.guildId]||{})};
+    return {...{scope:'server',sort:this.prefs.defaultSort,updates:'all'},...(this.prefs.filters[this.context.guildId]||{}),scope:'server'};
   }
   async filterChange() {
     if(!this.profile)return this.chooseProfile();
-    const filters={...this.prefs.filters,[this.context.guildId]:{scope:this.scope.value,sort:this.sort.value,updates:this.updateToggle.value}};
+    const filters={...this.prefs.filters,[this.context.guildId]:{scope:'server',sort:this.sort.value,updates:this.viewMode}};
     await this.savePrefs({filters});this.limit=80;this.renderList();
   }
   updateContext() {
@@ -1027,12 +1073,12 @@ class ArchiveApp {
     const forumName=this.prefs.forumAliases[c.guildId+':'+forumId]||c.forumName||(forumId?'频道 '+forumId:'当前频道');
     this.contextEl.textContent=c.guildId ? guildName+' · '+forumName : '私信 / 非服务器页面';
     this.profileEl.textContent=this.profile ? this.profile.name : '';
-    this.scope.value=f.scope; this.scope.textContent=f.scope==='forum'?'本频道':'全服务器';
-    this.scope.setAttribute('aria-checked',String(f.scope==='server'));
-    this.updateToggle.value=f.updates==='changed'?'changed':'all';
-    this.updateToggle.textContent=f.updates==='changed'?'最近更新':'全部';
-    this.updateToggle.setAttribute('aria-checked',String(f.updates==='changed'));
-    this.updateToggle.title=f.updates==='changed'?'只显示标题发生变化且尚未标记已查看的帖子':'显示全部收藏';
+    this.viewMode=['all','changed','missing'].includes(f.updates)?f.updates:'all';
+    for(const button of this.filterButtons){
+      const active=button.value===this.viewMode;
+      button.setAttribute('aria-pressed',String(active));
+      button.setAttribute('aria-selected',String(active));
+    }
     this.sort.value=f.sort; this.sort.title=this.sort.selectedOptions?.[0]?.textContent||'排序';
     this.collectionButton.textContent=this.selectedFolder().name+' ▾';
     const saved=this.store && c.type==='thread' && this.store.records.has(identity(c));
@@ -1143,23 +1189,37 @@ class ArchiveApp {
   }
   async refreshVisibleTitles() {
     if(!this.profile)return this.chooseProfile();
-    if(Date.now()-(this.lastTitleRefresh||0)<60000){this.toast('请稍后再刷新标题。');return;}
-    const posts=this.adapter.collectVisiblePosts();
-    if(!posts.length){
-      this.toast('当前没有可读取的帖子卡片。请进入论坛频道，等帖子列表加载后再刷新。');
+    const c=this.adapter.inspect();
+    if(c.type!=='forum'||!c.guildId||!c.forumId){
+      this.toast('请进入需要检查的论坛频道，再点击更新。');
       return;
     }
-    let changed=0,seen=0;
-    for(const info of posts){
-      const existing=this.store.records.get(identity(info));
-      if(!existing)continue;
-      seen++;
-      if(info.originalTitle && info.originalTitle!==existing.originalTitle){
-        await this.store.observe(info);changed++;
-      }
+    const scanKey=c.guildId+':'+c.forumId;
+    if(Date.now()-(this.lastTitleRefresh?.[scanKey]||0)<10000){
+      this.toast('此论坛刚检查过，请稍后再试。');return;
     }
-    if(seen)this.lastTitleRefresh=Date.now();
-    this.toast('从当前页面识别到 '+posts.length+' 个帖子，其中 '+seen+' 条属于本地收藏；更新 '+changed+' 个标题。');
+    const posts=this.adapter.collectVisiblePosts().filter(p=>p.guildId===c.guildId&&p.forumId===c.forumId);
+    const visibleIds=new Set(posts.map(p=>p.threadId));
+    if(!visibleIds.size){
+      this.toast('此论坛没有可读取的活跃帖子卡片；未标记任何帖子为未检测到。');
+      return;
+    }
+    await this.store.refresh();
+    const comparison=compareVisibleForum(this.store.records.values(),{
+      guildId:c.guildId,forumId:c.forumId,visibleThreadIds:visibleIds
+    });
+    let changed=0;
+    for(const post of posts){
+      const before=this.store.records.get(identity(post));
+      if(!before)continue;
+      if(post.originalTitle && post.originalTitle!==before.originalTitle)changed++;
+      await this.store.observe(post);
+    }
+    await this.savePrefs({scanResults:{...this.prefs.scanResults,[scanKey]:comparison}});
+    this.lastTitleRefresh={...this.lastTitleRefresh,[scanKey]:Date.now()};
+    this.renderList();
+    this.toast('已检查活跃帖子 '+comparison.visibleCount+' 条；匹配收藏 '+comparison.matchedCount+
+      ' 条，标题更新 '+changed+' 条；本次未检测到 '+comparison.missing.length+' 条（不代表失效）。');
   }
   buildPanel() {
     const btn=(text,label,fn,cls='icon')=>element('button',{text,'aria-label':label,title:label,class:cls,onclick:this.safe(fn)});
@@ -1170,13 +1230,11 @@ class ArchiveApp {
     this.profileEl=element('div',{class:'profile'});
     this.search=element('input',{type:'search',placeholder:'搜索帖子标题','aria-label':'搜索收藏'});
     this.search.addEventListener('input',()=>{this.query=this.search.value;this.limit=80;this.renderList();});
-    this.scope=element('button',{class:'scope-toggle',role:'switch','aria-label':'切换本频道或全服务器',onclick:this.safe(async()=>{
-      this.scope.value=this.scope.value==='forum'?'server':'forum';await this.filterChange();
-    })});
-    this.scope.value='forum';
-    this.updateToggle=element('button',{class:'update-toggle',role:'switch','aria-label':'全部或最近更新',onclick:this.safe(async()=>{
-      this.updateToggle.value=this.updateToggle.value==='changed'?'all':'changed';await this.filterChange();
-    })});this.updateToggle.value='all';
+    this.viewMode='all';
+    this.filterButtons=[['all','全部'],['changed','更新'],['missing','未检测到']].map(([value,label])=>
+      element('button',{class:'filter-segment',value,role:'tab','aria-label':label,'aria-pressed':'false',
+        onclick:this.safe(async()=>{this.viewMode=value;await this.filterChange();})},document.createTextNode(label)));
+    this.filterSegments=element('div',{class:'filter-segments',role:'tablist','aria-label':'收藏筛选'},...this.filterButtons);
     this.collectionButton=element('button',{class:'collection-select',title:'选择或管理收藏夹',onclick:this.safe(()=>this.folderDialog())});
     this.sort=element('select',{'aria-label':'排序方式'},...SORTS.map((v,i)=>element('option',{value:v,text:['收藏时间 ↓','收藏时间 ↑','修改时间 ↓','修改时间 ↑','标题 A→Z','标题 Z→A','星标优先'][i]})));
     this.sort.addEventListener('change',this.safe(()=>this.filterChange()));
@@ -1185,7 +1243,7 @@ class ArchiveApp {
     this.list=element('div',{class:'list',role:'region','aria-label':'收藏列表',tabindex:'0'});
     this.count=element('span',{role:'status'});
     this.panel.append(this.header,this.contextEl,
-      element('div',{class:'tools'},this.search,element('div',{class:'filters'},this.scope,this.updateToggle,this.collectionButton,sortSlot),this.pageSave),
+      element('div',{class:'tools'},this.search,element('div',{class:'filters'},this.filterSegments,this.collectionButton,sortSlot),this.pageSave),
       this.list,element('footer',{class:'footer'},this.count,btn('⟳ 更新可见标题','刷新当前页面可见收藏的标题',()=>this.refreshVisibleTitles(),'refresh-titles')));
     this.tab=btn('关注帖','展开收藏面板',()=>this.setMode('expanded',true),'tab');
     this.tab.addEventListener('mouseenter',()=> {if(this.prefs.hover)this.safe(()=>this.setMode('expanded',true))();});
@@ -1260,9 +1318,21 @@ class ArchiveApp {
     if(!this.list)return;const oldScroll=this.list.scrollTop;
     const active=this.root.activeElement, focusKey=active?.getAttribute('data-focus');
     const frag=document.createDocumentFragment();let records=[];
-    if(this.store && this.context.guildId)records=selectRecords(this.store.records.values(),{...this.context,...this.currentFilter(),collectionId:this.selectedFolder().id,query:this.query});
-    this.count.textContent=`${records.length} 条 · 资料库共 ${this.store?.records.size || 0} 条`;
-    if(!records.length)frag.append(element('div',{class:'empty',text:!this.profile?'选择资料库后即可开始收藏。':!this.context.guildId?'请进入服务器查看收藏。':this.query?'没有匹配的收藏。':this.currentFilter().updates==='changed'?'目前没有尚未查看的标题变化。':this.context.forumId?'此筛选下还没有收藏。':'此页未确定父论坛；显示本服务器待归属收藏。可切换“整个服务器”。'}));
+    const guild=this.context.guildId;
+    const missingIds=new Set();
+    let scannedForums=0;
+    if(guild && this.prefs.scanResults)for(const [key,scan] of Object.entries(this.prefs.scanResults)){
+      if(!key.startsWith(guild+':'))continue;
+      scannedForums++;
+      for(const id of scan.missing||[])missingIds.add(guild+':'+id);
+    }
+    if(this.store && guild)records=selectRecords(this.store.records.values(),{
+      ...this.context,...this.currentFilter(),scope:'server',
+      missingIds,collectionId:this.selectedFolder().id,query:this.query
+    });
+    this.count.textContent=records.length+' 条 · 资料库共 '+(this.store?.records.size||0)+' 条'+
+      (this.viewMode==='missing'?' · 已检查 '+scannedForums+' 个论坛':'');
+    if(!records.length)frag.append(element('div',{class:'empty',text:!this.profile?'选择资料库后即可开始收藏。':!this.context.guildId?'请进入服务器查看收藏。':this.query?'没有匹配的收藏。':this.currentFilter().updates==='changed'?'目前没有尚未查看的标题变化。':this.currentFilter().updates==='missing'?(scannedForums?'当前已检查论坛中，没有未检测到的收藏。':'尚未检查过本服务器的论坛，请进入论坛频道点击更新。'):'此收藏夹在本服务器暂无记录。'}));
     const shortDate=v=>{
       if(v==null)return '—';
       const days=Math.max(0,Math.floor((Date.now()-v)/86400000));
@@ -1463,8 +1533,7 @@ class ArchiveApp {
               }controls.dock.value=this.prefs.dock;
             })}))),
         bookmarks:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'收藏与识别'},
-          group('收藏默认值',grid(select('defaultScope','新服务器默认范围',[['forum','本频道'],['server','全服务器']]),
-            select('defaultSort','新服务器默认排序',SORTS.map((value,i)=>[value,['最近收藏','最早收藏','最近修改','最早修改','标题 A–Z','标题 Z–A','星标优先'][i]])))),
+          group('收藏默认值',grid(select('defaultSort','默认排序',SORTS.map((value,i)=>[value,['最近收藏','最早收藏','最近修改','最早修改','标题 A–Z','标题 Z–A','星标优先'][i]])))),
           group('识别功能',check('autoFollow','自动记录已确认的原生关注'),
             check('debug','在控制台记录调试事件'))),
         about:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'关于'},
