@@ -201,3 +201,51 @@ test('current bookmark highlighting switches with the active thread and clears o
   a.context={type:'unknown',guildId:G,channelId:F};
   assert.equal(a.currentPostIdentity(),null,'a forum channel must not appear as a saved post');
 });
+
+test('focusing the selected bookmark respects filters and scrolls only when outside the viewport',async()=>{
+  const {a}=app();const U='444444444444444444';
+  await a.store.add(makeRecord({guildId:G,threadId:T,forumId:F,originalTitle:'A'}));
+  await a.store.add(makeRecord({guildId:G,threadId:U,forumId:F,originalTitle:'B'}));
+  a.context={type:'thread',guildId:G,threadId:T};
+  a.panel={hidden:false};
+  let position=25,renderCalls=0;
+  const card={
+    getAttribute:key=>key==='data-post-key'?G+':'+T:null,
+    getBoundingClientRect:()=>({top:300,bottom:360,height:60})
+  };
+  a.list={scrollTop:25,clientHeight:180,scrollHeight:800,
+    getBoundingClientRect:()=>({top:100,bottom:280,height:180}),
+    querySelectorAll:()=>[card],
+    scrollTo:({top,behavior})=>{position=top;a.list.scrollTop=top;a.list.lastBehavior=behavior;}
+  };
+  a.prefs.motion=false;
+  a.focusCurrentPost();
+  assert.equal(position,25+300-100-(180-60)/2);
+  assert.equal(a.list.lastBehavior,'auto');
+  assert.equal(renderCalls,0);
+  card.getBoundingClientRect=()=>({top:130,bottom:190,height:60});
+  a.focusCurrentPost();
+  assert.equal(position,165,'an already visible card should not be scrolled again');
+  a.query='does not match';
+  a.focusCurrentPost();assert.equal(position,165,'filtered-out bookmarks must not force a scroll');
+  a.query='';
+  a.panel.hidden=true;
+  a.focusCurrentPost();assert.equal(position,165,'collapsed panels should not scroll');
+});
+test('opening bookmark prioritizes visible Discord-native anchor while retaining fallback and modified click',()=>{
+  const {a}=app();a.profile={id:'profile-school',name:'School'};
+  a.context={type:'forum',guildId:G,forumId:F};
+  a.list={scrollTop:100};let captures=0,clicks=0;
+  a.captureBookmarkScroll=()=>captures++;
+  a.findNativePostLink=()=>({click:()=>clicks++});
+  const r=makeRecord({guildId:G,threadId:T,forumId:F,originalTitle:'A'});
+  const event=()=>({button:0,defaultPrevented:false,metaKey:false,ctrlKey:false,shiftKey:false,altKey:false,preventDefault(){this.prevented=true;}});
+  const e=event();a.openBookmarkedPost(e,r);
+  assert.equal(e.prevented,true);assert.equal(clicks,1);assert.equal(captures,1);
+  a.findNativePostLink=()=>null;
+  const fallback=event();a.openBookmarkedPost(fallback,r);
+  assert.equal(fallback.prevented,undefined);assert.equal(captures,2);
+  const modified={...event(),ctrlKey:true};
+  a.openBookmarkedPost(modified,r);
+  assert.equal(captures,2,'modifier clicks must remain untouched');
+});
