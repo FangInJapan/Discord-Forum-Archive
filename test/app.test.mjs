@@ -97,10 +97,29 @@ test('focus inside a Shadow DOM input marks host editable for document-capture s
   assert.equal(host.getAttribute('contenteditable'),null);
 });
 
-test('recent update filter preferences persist per server and do not reset scope',async()=>{
+test('three-way filter persists server-wide and no longer depends on a broken forum/server switch',async()=>{
   const {a}=app();a.context={type:'forum',guildId:G,forumId:F};
-  a.scope={value:'server'};a.sort={value:'saved-desc'};a.updateToggle={value:'changed'};
+  a.sort={value:'saved-desc'};a.viewMode='missing';
   await a.filterChange();
-  assert.deepEqual(a.currentFilter(),{scope:'server',sort:'saved-desc',updates:'changed'});
-  assert.equal(a.prefs.filters[G].updates,'changed');
+  assert.deepEqual(a.currentFilter(),{scope:'server',sort:'saved-desc',updates:'missing'});
+  assert.equal(a.prefs.filters[G].updates,'missing');
+  a.viewMode='changed';await a.filterChange();
+  assert.equal(a.currentFilter().updates,'changed');
+  assert.equal(a.currentFilter().scope,'server');
+});
+
+test('manual scan records only verified forum; no posts means no missing-state update',async()=>{
+  const {a}=app();a.context={type:'forum',guildId:G,forumId:F};
+  a.adapter={inspect:()=>({type:'forum',guildId:G,forumId:F}),collectVisiblePosts:()=>[]};
+  await a.store.add(makeRecord({guildId:G,threadId:T,forumId:F,originalTitle:'旧标题'}));
+  await a.refreshVisibleTitles();
+  assert.deepEqual(a.prefs.scanResults,{});
+  const U='444444444444444444';
+  await a.store.add(makeRecord({guildId:G,threadId:U,forumId:F,originalTitle:'另一个帖子'}));
+  a.adapter.collectVisiblePosts=()=>[{guildId:G,forumId:F,threadId:T,originalTitle:'新标题'}];
+  await a.refreshVisibleTitles();
+  assert.equal(a.prefs.scanResults[G+':'+F].visibleCount,1);
+  assert.deepEqual(a.prefs.scanResults[G+':'+F].missing,[U]);
+  assert.equal(a.store.records.get(G+':'+T).changeUnread,true);
+  assert.equal(a.store.records.get(G+':'+U).changeUnread,false);
 });
