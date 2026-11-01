@@ -1181,11 +1181,12 @@ class ArchiveApp {
   findNativePostLink(record) {
     const main=document.querySelector('main,[role="main"]');
     if(!main)return null;
+    let currentOrigin;try{currentOrigin=new URL(this.href()).origin;}catch{return null;}
     for(const anchor of main.querySelectorAll('a[href*="/channels/"]')){
       if(!anchor.isConnected||!anchor.getClientRects().length||
         anchor.closest('[hidden],[aria-hidden="true"]'))continue;
       let url;try{url=new URL(anchor.href,location.href);}catch{continue;}
-      if(url.origin!==location.origin)continue;
+      if(url.origin!==currentOrigin)continue;
       const ids=url.pathname.match(/^\/channels\/(\d{16,22})\/(\d{16,22})(?:\/(\d{16,22}))?\/?$/);
       if(!ids||ids[1]!==record.guildId)continue;
       if((ids[2]===record.threadId&&!ids[3])||
