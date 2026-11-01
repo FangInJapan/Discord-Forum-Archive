@@ -197,6 +197,27 @@ try {
   await page.getByRole('dialog',{name:'修改显示名称'}).getByRole('button',{name:'频道类型识别 / 修正'}).click();
   await page.getByRole('dialog',{name:'确认频道类型'}).getByRole('button',{name:'确认当前频道是论坛'}).click();
   await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().type==='forum');
+  // The forum already contains a Discord-owned link to saved thread T.
+  // Clicking the userscript entry should delegate to that link without
+  // reloading this test document or forging history.pushState.
+  await page.locator('#forum').click();
+  await page.waitForFunction(()=>window.fixtureApp.context.type==='forum');
+  await page.evaluate(()=>{
+    const anchor=document.querySelector('main a[href$="/333333333333333333"]');
+    if(!anchor)throw new Error('Missing Discord-owned native forum link');
+    window.fixtureNativeClicks=0;
+    anchor.addEventListener('click',()=>window.fixtureNativeClicks++);
+    window.fixtureInstanceBefore=window.fixtureApp;
+  });
+  await page.getByRole('region',{name:'收藏列表'})
+    .locator('article[data-post-key="111111111111111111:333333333333333333"] a.card-title').click();
+  await page.waitForFunction(()=>window.fixtureApp.context.type==='thread'&&
+    window.fixtureApp.context.threadId==='333333333333333333');
+  assert.equal(await page.evaluate(()=>window.fixtureNativeClicks),1,
+    'saved post click should reuse Discord existing visible post link');
+  assert.equal(await page.evaluate(()=>window.fixtureApp===window.fixtureInstanceBefore),true,
+    'native forum link should stay in the same SPA document');
+
   // A clicked bookmark must keep the current list position across route
   // navigation, reactive re-renders, and a full-page reload in the same tab.
   await page.locator('#forum').click();
@@ -280,8 +301,14 @@ try {
       active?.getAttribute('data-post-key')==='111111111111111111:'+window.fixtureSecondThread;
   });
   assert.equal(await page.locator('article.compact-card.is-current-post').count(),1,'highlight must move to second opened saved thread');
-  assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),actualClickScroll,
-    'highlight change must not auto-scroll the list');
+  await page.waitForFunction(()=>{
+    const app=window.fixtureApp,card=app.list.querySelector('article.compact-card.is-current-post');
+    if(!card)return false;
+    const list=app.list.getBoundingClientRect(),rect=card.getBoundingClientRect();
+    return rect.top>=list.top-1&&rect.bottom<=list.bottom+1;
+  });
+  assert.ok(await page.evaluate(()=>window.fixtureApp.list.scrollTop)>=0,
+    'opening a saved post outside the viewport should locate it in the panel');
   await page.locator('#forum').click();
   await page.waitForFunction(()=>window.fixtureApp.context.type==='forum');
   await page.waitForFunction(()=>window.fixtureApp.list.querySelector('article.compact-card.is-current-post')===null);
