@@ -1,5 +1,5 @@
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-export const VERSION = '1.2.1';
+export const VERSION = '1.3.0';
 export const SCHEMA = 1;
 export const PREFIX = 'dfa:v1:';
 export const ID = /^[0-9]{16,22}$/;
@@ -10,7 +10,7 @@ export const DEFAULTS = Object.freeze({
   theme: 'discord', titleSize: 15, uiSize: 13, lines: 4, density: 'standard',
   snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true, glass: true, motion: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
-  width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {},
+  width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {}, scanResults: {},
   folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}
 });
 export function uid() { return crypto.randomUUID(); }
@@ -172,11 +172,22 @@ export class ArchiveStore {
     patch.lastObservedAt = Date.now(); return this.patch(identity(r),patch);
   }
 }
-export function selectRecords(records, { guildId, forumId, scope = 'forum', collectionId = null, updates = 'all', query = '', sort = 'saved-desc' }) {
+// Return IDs absent from the *currently rendered* active forum card sample.
+// A missing ID means "not detected in this scan", never deleted or inaccessible.
+export function compareVisibleForum(records,{guildId,forumId,visibleThreadIds,checkedAt=Date.now()}) {
+  if(!ID.test(guildId||'')||!ID.test(forumId||''))throw new Error('请进入可识别的论坛频道。');
+  const visible=new Set([...visibleThreadIds].filter(id=>typeof id==='string'&&ID.test(id)));
+  if(!visible.size)throw new Error('当前没有可识别的活跃帖子卡片，未生成扫描记录。');
+  const scoped=[...records].filter(r=>r.guildId===guildId&&r.forumId===forumId);
+  return {checkedAt,visibleCount:visible.size,matchedCount:scoped.filter(r=>visible.has(r.threadId)).length,
+    missing:scoped.filter(r=>!visible.has(r.threadId)).map(r=>r.threadId)};
+}
+export function selectRecords(records, { guildId, forumId, scope = 'server', collectionId = null, updates = 'all', missingIds = new Set(), query = '', sort = 'saved-desc' }) {
   const q = query.normalize('NFKC').toLocaleLowerCase();
   const result = [...records].filter(r => r.guildId === guildId && (scope === 'server' || r.forumId === (forumId ?? null)) &&
     (collectionId === null || (r.collectionId || 'default') === collectionId) &&
     (updates !== 'changed' || r.changeUnread === true) &&
+    (updates !== 'missing' || missingIds.has(identity(r))) &&
     [r.customTitle || '',r.originalTitle,r.forumName].some(s => s.normalize('NFKC').toLocaleLowerCase().includes(q)));
   const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
   result.sort((a,b) => {
@@ -251,7 +262,19 @@ export function cleanPrefs(raw) {
   for (const [k,min,max] of [['titleSize',12,22],['uiSize',11,18],['width',300,760],['height',240,2000],['x',0,1],['y',0,1]]) if (typeof raw[k] === 'number' && Number.isFinite(raw[k])) p[k] = Math.max(min,Math.min(max,raw[k]));
   if ([0,1,2,3,4].includes(raw.lines)) p.lines = raw.lines;
   p.filters = {};
-  if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:f.scope,sort:f.sort,updates:f.updates==='changed'?'changed':'all'};
+  if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:'server',sort:f.sort,updates:['all','changed','missing'].includes(f.updates)?f.updates:'all'};
+  // Manual scans cover only the forum that was actually shown in Discord.
+  // Never infer deletion/invalidity from absence in a partially loaded list.
+  p.scanResults={};
+  if(raw.scanResults && typeof raw.scanResults==='object' && !Array.isArray(raw.scanResults)){
+    for(const [key,scan] of Object.entries(raw.scanResults).slice(-500)){
+      if(!/^\d{16,22}:\d{16,22}$/.test(key)||!scan||typeof scan!=='object')continue;
+      if(!Number.isSafeInteger(scan.checkedAt)||scan.checkedAt<0||!Number.isSafeInteger(scan.visibleCount)||scan.visibleCount<1)continue;
+      const missing=Array.isArray(scan.missing) ? [...new Set(scan.missing.filter(id=>typeof id==='string'&&ID.test(id)))].slice(0,10000) : [];
+      p.scanResults[key]={checkedAt:scan.checkedAt,visibleCount:scan.visibleCount,
+        matchedCount:Number.isSafeInteger(scan.matchedCount)&&scan.matchedCount>=0?scan.matchedCount:0,missing};
+    }
+  }
   p.folders=validateFolders(raw.folders);
   p.folderSelections={};
   if(raw.folderSelections&&typeof raw.folderSelections==='object')for(const [guild,id] of Object.entries(raw.folderSelections)) {
