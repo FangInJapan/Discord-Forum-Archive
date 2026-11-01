@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ArchiveStore,canonical,cleanPrefs,exportData,geometry,identity,makeRecord,mergeImport,parseImport,parseLink,reduceOperations,selectRecords,validateRecord} from '../src/core.js';
+import {ArchiveStore,compareVisibleForum,canonical,cleanPrefs,exportData,geometry,identity,makeRecord,mergeImport,parseImport,parseLink,reduceOperations,selectRecords,validateRecord} from '../src/core.js';
 const G='111111111111111111',F='222222222222222222',T='333333333333333333',U='444444444444444444',OTHER='555555555555555555';
 const record=(id=T,extra={})=>makeRecord({guildId:G,threadId:id,forumId:F,forumName:'電気交流',originalTitle:'教程2 '+ '日本語中文 English 🧪'.repeat(12),...extra},'manual-page',1000);
 class Memory {
@@ -165,4 +165,31 @@ test('older archives safely migrate without generating false title changes',asyn
   assert.equal(cleanPrefs({filters:{[G]:{scope:'server',sort:'saved-asc',updates:'changed'}}}).filters[G].updates,'changed');
   const mem=new Memory(),store=new ArchiveStore(mem,'profile-old');await store.add(migrated);
   assert.equal(selectRecords(store.records.values(),{guildId:G,scope:'server',updates:'changed'}).length,0);
+});
+
+test('server views distinguish changed titles from explicit forum scan absence',()=>{
+  const F2='666666666666666666',W='777777777777777777';
+  const saved=[record(T,{forumId:F}),record(U,{forumId:F}),record(W,{forumId:F2})];
+  const scan=compareVisibleForum(saved,{guildId:G,forumId:F,visibleThreadIds:new Set([T,'888888888888888888'])});
+  assert.equal(scan.visibleCount,2);
+  assert.equal(scan.matchedCount,1);
+  assert.deepEqual(scan.missing,[U]);
+  const missingIds=new Set(scan.missing.map(id=>G+':'+id));
+  assert.deepEqual(selectRecords(saved,{guildId:G,scope:'server',updates:'missing',missingIds}).map(r=>r.threadId),[U]);
+  assert.equal(selectRecords(saved,{guildId:G,scope:'server',updates:'all'}).length,3);
+  assert.equal(selectRecords(saved,{guildId:G,scope:'server',updates:'changed'}).length,0);
+  assert.throws(()=>compareVisibleForum(saved,{guildId:G,forumId:F,visibleThreadIds:[]}),/活跃帖子/);
+});
+test('scan snapshots migrate safely and never include unknown forums',()=>{
+  const F2='666666666666666666';
+  const p=cleanPrefs({scanResults:{
+    [G+':'+F]:{checkedAt:1234,visibleCount:4,matchedCount:2,missing:[U,U,'bad']},
+    [G+':'+F2]:{checkedAt:2000,visibleCount:2,matchedCount:0,missing:[]},
+    'bad':{checkedAt:1234,visibleCount:4,missing:[]}
+  },filters:{[G]:{scope:'forum',sort:'saved-desc',updates:'missing'}}});
+  assert.equal(Object.keys(p.scanResults).length,2);
+  assert.deepEqual(p.scanResults[G+':'+F].missing,[U]);
+  assert.equal(p.filters[G].scope,'server');
+  assert.equal(p.filters[G].updates,'missing');
+  assert.deepEqual(cleanPrefs({}).scanResults,{});
 });
