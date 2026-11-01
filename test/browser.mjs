@@ -60,6 +60,14 @@ try {
     await app.store.add(makeRecord({guildId:'111111111111111111',
       threadId:'444444444444444444',forumId:'222222222222222222',
       originalTitle:'教程10｜数字电子技术'},'manual-link'));
+    // A saved, currently unrendered thread in the scanned forum is missing;
+    // one in another forum must never be classified as missing.
+    await app.store.add(makeRecord({guildId:'111111111111111111',
+      threadId:'555555555555555555',forumId:'222222222222222222',
+      originalTitle:'当前论坛尚未加载的旧帖'},'manual-link'));
+    await app.store.add(makeRecord({guildId:'111111111111111111',
+      threadId:'666666666666666666',forumId:'777777777777777777',
+      originalTitle:'其他论坛未扫描帖子'},'manual-link'));
   });
   await page.locator('#rename-card').click();
   await page.waitForFunction(()=>{
@@ -77,6 +85,17 @@ try {
   assert.equal(renamed.previousSeenTitle,'教程10｜数字电子技术');
   assert.equal(renamed.originalTitle,'教程10｜标题已经在论坛列表中变化');
   assert.ok(!renamed.originalTitle.includes('帖子预览消息内容'));
+  const view=page.getByRole('tablist',{name:'收藏筛选'});
+  assert.equal(await view.getByRole('tab').count(),3);
+  await view.getByRole('tab',{name:'未检测到'}).click();
+  await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:'当前论坛尚未加载的旧帖'}).waitFor();
+  assert.equal(await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:'其他论坛未扫描帖子'}).count(),0,
+    'unscanned other forum must never enter missing mode');
+  const scan=await page.evaluate(()=>window.fixtureApp.prefs.scanResults['111111111111111111:222222222222222222']);
+  assert.deepEqual(scan.missing,['555555555555555555']);
+  await view.getByRole('tab',{name:'全部'}).click();
+  assert.equal(await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:'其他论坛未扫描帖子'}).count(),1,
+    'All view must cover saved posts across forums in the current server');
   await page.evaluate(()=>window.fixtureApp.store.patch('111111111111111111:444444444444444444',{changeUnread:false}));
   await page.getByRole('region',{name:'收藏列表'}).getByRole('article').first().waitFor();
 
@@ -87,16 +106,16 @@ try {
       guildId:'111111111111111111',threadId:'333333333333333333',originalTitle:'已确认更名的论坛帖子'
     });
   });
-  const updateSwitch=page.getByRole('switch',{name:'全部或最近更新'});
-  await updateSwitch.click();
-  assert.equal(await updateSwitch.getAttribute('aria-checked'),'true');
+  const updateTab=view.getByRole('tab',{name:'更新',exact:true});
+  await updateTab.click();
+  assert.equal(await updateTab.getAttribute('aria-pressed'),'true');
   await page.getByRole('region',{name:'收藏列表'}).getByRole('article').first().waitFor();
   assert.equal(await page.locator('article.title-changed').count(),1);
   await page.getByRole('button',{name:'帖子更多操作'}).click();
   await page.getByRole('dialog',{name:'帖子操作'}).getByRole('button',{name:'标记标题变化为已查看'}).click();
   await page.getByRole('region',{name:'收藏列表'}).getByText('目前没有尚未查看的标题变化。').waitFor();
-  await updateSwitch.click();
-  assert.equal(await updateSwitch.getAttribute('aria-checked'),'false');
+  await view.getByRole('tab',{name:'全部'}).click();
+  assert.equal(await updateTab.getAttribute('aria-pressed'),'false');
   await page.getByRole('button',{name:'设置',exact:true}).click();
   const settings=page.getByRole('dialog',{name:'Forum Archive 设置'});
   await settings.getByRole('tab',{name:'外观'}).waitFor();
