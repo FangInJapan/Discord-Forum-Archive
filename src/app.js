@@ -193,6 +193,7 @@ export class ArchiveApp {
     this.adapter.setKnownForums(this.prefs.knownForums);
     this.force=false;this.changed();this.layout();this.applyTheme();
     if(resume&&this.context.guildId===resume.guildId)this.list.scrollTop=resume.top;
+    if(this.currentPostIdentity())this.focusCurrentPost();
     this.adapter.scan();
   }
   changed() {
