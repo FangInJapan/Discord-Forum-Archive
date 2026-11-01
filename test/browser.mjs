@@ -197,6 +197,58 @@ try {
   await page.getByRole('dialog',{name:'修改显示名称'}).getByRole('button',{name:'频道类型识别 / 修正'}).click();
   await page.getByRole('dialog',{name:'确认频道类型'}).getByRole('button',{name:'确认当前频道是论坛'}).click();
   await page.waitForFunction(()=>window.fixtureApp.adapter.inspect().type==='forum');
+  // A clicked bookmark must keep the current list position across route
+  // navigation, reactive re-renders, and a full-page reload in the same tab.
+  await page.locator('#forum').click();
+  await page.waitForFunction(()=>window.fixtureApp.context.type==='forum');
+  await page.evaluate(async()=>{
+    const app=window.fixtureApp;
+    for(let i=0;i<28;i++)await app.store.add(makeRecord({
+      guildId:'111111111111111111',forumId:'222222222222222222',
+      threadId:String(880000000000000000n+BigInt(i)),
+      originalTitle:'滚动状态回归帖 '+String(i).padStart(2,'0')
+    },'manual-link'));
+    app.renderList();
+  });
+  const clicked=await page.evaluate(()=>{
+    const app=window.fixtureApp,list=app.list;
+    list.scrollTop=Math.min(520,list.scrollHeight-list.clientHeight);
+    const bounds=list.getBoundingClientRect();
+    const link=[...list.querySelectorAll('a.card-title')].find(el=>{
+      const r=el.getBoundingClientRect();
+      return r.top>bounds.top+8 && r.bottom<bounds.bottom-8;
+    });
+    if(!link)throw new Error('No visible bookmark link found for scroll regression');
+    link.addEventListener('click',e=>{
+      e.preventDefault();window.fixtureShowThread('333333333333333333','收藏链接跳转后的帖子');
+    },{once:true});
+    return {top:list.scrollTop,title:link.textContent};
+  });
+  assert.ok(clicked.top>100,'regression test requires real non-zero scroll offset');
+  await page.getByRole('region',{name:'收藏列表'}).getByRole('link',{name:clicked.title,exact:true}).click();
+  await page.waitForFunction(()=>window.fixtureApp.context.type==='thread'&&
+    window.fixtureApp.context.threadId==='333333333333333333');
+  await page.waitForTimeout(260);
+  assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),clicked.top,
+    'opening a bookmark must retain the list scroll position');
+  await page.evaluate(()=>window.fixtureApp.sync());
+  assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),clicked.top,
+    'background sync must not reset the scroll after navigation');
+  await page.locator('#forum').click();
+  await page.waitForFunction(()=>window.fixtureApp.context.type==='forum');
+  const beforeReload=await page.evaluate(()=>{
+    const app=window.fixtureApp;
+    app.list.scrollTop=630;
+    app.captureBookmarkScroll();
+    return app.list.scrollTop;
+  });
+  assert.ok(beforeReload>100);
+  await page.reload();
+  await page.getByRole('region',{name:'收藏列表'}).getByRole('article').first().waitFor();
+  await page.waitForFunction(expected=>window.fixtureApp.profile&&
+    window.fixtureApp.list.scrollTop===expected,beforeReload);
+  assert.equal(await page.evaluate(()=>window.fixtureApp.list.scrollTop),beforeReload,
+    'same-tab page reload must consume and restore the clicked bookmark checkpoint');
   await page.locator('#theme').click();
   await page.locator('#audit').click();const report=await page.locator('#fixture-log').textContent();assert.ok(!report.includes('FAIL'),report);
   await mkdir('test-output',{recursive:true});
