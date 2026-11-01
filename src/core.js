@@ -182,7 +182,7 @@ export function compareVisibleForum(records,{guildId,forumId,visibleThreadIds,ch
   return {checkedAt,visibleCount:visible.size,matchedCount:scoped.filter(r=>visible.has(r.threadId)).length,
     missing:scoped.filter(r=>!visible.has(r.threadId)).map(r=>r.threadId)};
 }
-export function selectRecords(records, { guildId, forumId, scope = 'server', collectionId = null, updates = 'all', missingIds = new Set(), query = '', sort = 'saved-desc' }) {
+export function selectRecords(records, { guildId, forumId, scope = 'forum', collectionId = null, updates = 'all', missingIds = new Set(), query = '', sort = 'saved-desc' }) {
   const q = query.normalize('NFKC').toLocaleLowerCase();
   const result = [...records].filter(r => r.guildId === guildId && (scope === 'server' || r.forumId === (forumId ?? null)) &&
     (collectionId === null || (r.collectionId || 'default') === collectionId) &&
