@@ -662,7 +662,10 @@ export class ArchiveApp {
           }
           await this.savePrefs({folders,
             guildAliases:{...imported.guildAliases,...this.prefs.guildAliases},
-            forumAliases:{...imported.forumAliases,...this.prefs.forumAliases}});
+            forumAliases:{...imported.forumAliases,...this.prefs.forumAliases},
+            knownForums:policy.value==='incoming'?
+              {...this.prefs.knownForums,...imported.knownForums}:
+              {...imported.knownForums,...this.prefs.knownForums}});
           const result=await mergeImport(store,imported.records,policy.value);status.textContent=`导入完成：新增 ${result.added} 条，更新 ${result.updated} 条。`;importBtn.disabled=true;imported=null;}
         catch(e){throw new Error(`导入中断，已完成的记录已保留。可安全重试。${e.message}`);}
       })});
@@ -676,7 +679,7 @@ export class ArchiveApp {
           await store.refresh();const blob=new Blob([JSON.stringify(exportData(store.records.values(),profile,this.prefs),null,2)],{type:'application/json'});
           const url=URL.createObjectURL(blob),a=element('a',{href:url,download:`Forum-Archive-${new Date().toISOString().slice(0,10)}.json`});this.root.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);status.textContent='已生成备份，请确认浏览器下载完成。';
         })}),element('h3',{text:'合并导入'}),file,policy,status,importBtn,
-        element('p',{class:'muted',text:'导入逐条写入，存储失败时可能部分完成，重试会去重。覆盖模式会明确替换已有名称、星标和归属；收藏时间保持本地值。备份不包含界面偏好。'}));
+        element('p',{class:'muted',text:'导入逐条写入，存储失败时可能部分完成，重试会去重。覆盖模式会明确替换已有名称、星标和归属；收藏时间保持本地值。备份包含已确认的论坛类型，但不包含界面偏好。'}));
     });
   }
   settings() {
