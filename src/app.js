@@ -331,6 +331,10 @@ export class ArchiveApp {
     if(!this.profile)return this.chooseProfile();
     if(Date.now()-(this.lastTitleRefresh||0)<60000){this.toast('请稍后再刷新标题。');return;}
     const posts=this.adapter.collectVisiblePosts();
+    if(!posts.length){
+      this.toast('当前没有可读取的帖子卡片。请进入论坛频道，等帖子列表加载后再刷新。');
+      return;
+    }
     let changed=0,seen=0;
     for(const info of posts){
       const existing=this.store.records.get(identity(info));
@@ -340,8 +344,8 @@ export class ArchiveApp {
         await this.store.observe(info);changed++;
       }
     }
-    this.lastTitleRefresh=Date.now();
-    this.toast('已检查 '+seen+' 个当前可见的收藏，更新 '+changed+' 个标题。未后台请求其他帖子。');
+    if(seen)this.lastTitleRefresh=Date.now();
+    this.toast('从当前页面识别到 '+posts.length+' 个帖子，其中 '+seen+' 条属于本地收藏；更新 '+changed+' 个标题。');
   }
   buildPanel() {
     const btn=(text,label,fn,cls='icon')=>element('button',{text,'aria-label':label,title:label,class:cls,onclick:this.safe(fn)});

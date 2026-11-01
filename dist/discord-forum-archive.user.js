@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Forum Archive
 // @namespace    https://github.com/FangInJapan/Discord-Forum-Archive
-// @version      1.2.0
+// @version      1.2.1
 // @description  独立保存 Discord 论坛帖子收藏；支持分类、长标题、备份和可调面板。
 // @author       FangInJapan
 // @match        https://discord.com/channels/*
@@ -26,7 +26,7 @@
 
 // ---- core.js ----
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const SCHEMA = 1;
 const PREFIX = 'dfa:v1:';
 const ID = /^[0-9]{16,22}$/;
@@ -314,6 +314,21 @@ function normalizeThreadTitle(value) {
   if(cleaned===source && source.length>=40 && source.endsWith('聊天'))cleaned=source.slice(0,-2);
   return cleaned.trim() || source;
 }
+// Forum cards may link to /channels/guild/forum/thread, while permanent thread
+// links often use /channels/guild/thread. Treat the third ID as a thread only
+// when the second ID is the known, currently rendered forum (never a message).
+function visibleForumPostLink(href, context) {
+  if(context?.type!=='forum'||!ID.test(context.guildId||'')||!ID.test(context.forumId||''))return null;
+  let u;try{u=new URL(href,'https://discord.com');}catch{return null;}
+  if(u.protocol!=='https:'||!['discord.com','canary.discord.com','ptb.discord.com','discordapp.com'].includes(u.hostname)||u.port||u.username||u.password)return null;
+  const m=u.pathname.match(/^\/channels\/(\d{16,22})\/(\d{16,22})(?:\/(\d{16,22}))?\/?$/);
+  if(!m||m[1]!==context.guildId)return null;
+  const threadId=m[2]===context.forumId?(m[3]||u.searchParams.get('thread')):m[2];
+  if(!threadId||!ID.test(threadId)||threadId===context.forumId)return null;
+  // Links whose second ID names a different *forum* cannot be reliably
+  // distinguished from a direct thread URI, so callers must use forum cards.
+  return {guildId:context.guildId,threadId,url:canonical(context.guildId,threadId)};
+}
 function controlLabel(el) { return (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim(); }
 function visible(el) { return !!el && !el.closest('[hidden],[aria-hidden="true"]') && el.getClientRects().length > 0; }
 function routeOf(href) {
@@ -333,8 +348,10 @@ class DiscordAdapter {
   }
   main() { return this.doc.querySelector('main,[role="main"]'); }
   forumRoot(main) {
-    return main?.querySelector('[data-list-id*="forum"],[data-forum-channel-id]') ||
-      (main && [...main.querySelectorAll('button,[role="button"]')].some(b => visible(b) && CREATE.test(controlLabel(b))) ? main : null);
+    if(!main)return null;
+    return main.querySelector('[data-list-id*="forum"],[data-forum-channel-id]') ||
+      (main.querySelector('[class*="forumPost"],[class*="postCard"],[class*="forumChannel"]') ? main : null) ||
+      ([...main.querySelectorAll('button,[role="button"]')].some(b => visible(b) && CREATE.test(controlLabel(b))) ? main : null);
   }
   title(root) {
     if (!root) return '';
@@ -351,26 +368,36 @@ class DiscordAdapter {
     return !!scope && scope.isConnected!==false && [...scope.querySelectorAll('button,[role="button"],[role="menuitem"],[aria-label],[title]')]
       .some(el=>el.isConnected!==false && visible(el) && UNFOLLOW.test(controlLabel(el)));
   }
-  // Association is limited to rendered forum post cards. Never infer a post from a random menu.
+  // Read only a rendered forum post card associated with an explicit post link.
   postFromNode(node,c=this.context) {
-    if(!node?.closest || c.type!=='forum')return null;
-    const root=this.forumRoot(this.main());
-    if(!root || !root.contains(node))return null;
-    const card=node.closest('article,[role="article"],[role="listitem"],[data-list-item-id],[class*="forumPost"],[class*="postCard"]');
-    const anchor=node.closest('a[href]'), links=[anchor,...(card?[...card.querySelectorAll('a[href]')]:[])].filter(Boolean);
-    for(const link of links) {
-      try {
-        const parsed=parseLink(link.href);
-        if(parsed.guildId!==c.guildId || parsed.threadId===c.forumId)continue;
-        const scope=card||link;
-        const title=normalizeThreadTitle(this.title(scope)||link.getAttribute('aria-label')||link.textContent?.trim()||'');
-        return {...parsed,forumId:c.forumId,forumName:c.forumName,guildName:c.guildName,originalTitle:title,card:scope};
-      }catch{/* Non-post links are not candidates. */}
+    if(!node?.closest||c.type!=='forum')return null;
+    const root=this.forumRoot(this.main())||this.main();
+    if(!root||!root.contains(node))return null;
+    const selector='article,[role="article"],[role="listitem"],[data-list-item-id],[class*="forumPost"],[class*="postCard"],[class*="card_"]';
+    const card=node.closest(selector);
+    if(card && !root.contains(card))return null;
+    const anchor=node.closest('a[href]');
+    const links=[anchor,...(card?[...card.querySelectorAll('a[href]')]:[])].filter(Boolean);
+    for(const link of new Set(links)) {
+      const parsed=visibleForumPostLink(link.href||link.getAttribute('href'),c);
+      if(!parsed)continue;
+      // A card's heading is preferable to link text, which may contain
+      // preview messages, button labels, or other UI content.
+      const scope=card||link;
+      const heading=scope.querySelector('h2,h3,h4,[role="heading"],[data-testid*="post-title"],[class*="postTitle"],[class*="threadTitle"],[class*="titleText"],[class*="title_"]');
+      const title=normalizeThreadTitle(
+        (heading&&visible(heading)?heading.textContent:'') ||
+        link.getAttribute('aria-label') || link.getAttribute('title') ||
+        (link.children.length===0?link.textContent:'') || ''
+      );
+      if(!title || /^(?:打开帖子|查看帖子|聊天|消息|更多|回复)$/.test(title))continue;
+      return {...parsed,forumId:c.forumId,forumName:c.forumName,guildName:c.guildName,
+        originalTitle:title,card:card||link};
     }
     return null;
   }
   collectVisibleFollowed() {
-    const c=this.inspect(),root=c.type==='forum'?this.forumRoot(this.main()):null,records=new Map();
+    const c=this.inspect(),root=c.type==='forum'?(this.forumRoot(this.main())||this.main()):null,records=new Map();
     if(!root)return [];
     for(const link of root.querySelectorAll('a[href*="/channels/"]')) {
       if(!visible(link))continue;
@@ -385,11 +412,17 @@ class DiscordAdapter {
   collectVisiblePosts() {
     const c=this.inspect(),items=new Map();
     if(c.type==='thread'&&c.originalTitle)items.set(identity(c),c);
-    if(c.type==='forum'){
-      const root=this.forumRoot(this.main());
-      for(const link of root?.querySelectorAll('a[href*="/channels/"]')||[]){
+    // When a thread is open in Discord's sidebar, its forum cards may still
+    // be visible underneath it. Include those cards only with a known parent.
+    const route=routeOf(this.href());
+    const forumId=c.type==='forum'?c.forumId:(c.type==='thread'?
+      (c.forumId||(route.channelId&&route.channelId!==c.threadId?route.channelId:null)):null);
+    const root=this.forumRoot(this.main());
+    if(forumId && root){
+      const forumContext={type:'forum',guildId:c.guildId,forumId,forumName:c.forumName||'',guildName:c.guildName||''};
+      for(const link of root.querySelectorAll('a[href*="/channels/"]')){
         if(!visible(link))continue;
-        const info=this.postFromNode(link,c);
+        const info=this.postFromNode(link,forumContext);
         if(info?.originalTitle){const {card,...record}=info;items.set(identity(record),record);}
       }
     }
@@ -1112,6 +1145,10 @@ class ArchiveApp {
     if(!this.profile)return this.chooseProfile();
     if(Date.now()-(this.lastTitleRefresh||0)<60000){this.toast('请稍后再刷新标题。');return;}
     const posts=this.adapter.collectVisiblePosts();
+    if(!posts.length){
+      this.toast('当前没有可读取的帖子卡片。请进入论坛频道，等帖子列表加载后再刷新。');
+      return;
+    }
     let changed=0,seen=0;
     for(const info of posts){
       const existing=this.store.records.get(identity(info));
@@ -1121,8 +1158,8 @@ class ArchiveApp {
         await this.store.observe(info);changed++;
       }
     }
-    this.lastTitleRefresh=Date.now();
-    this.toast('已检查 '+seen+' 个当前可见的收藏，更新 '+changed+' 个标题。未后台请求其他帖子。');
+    if(seen)this.lastTitleRefresh=Date.now();
+    this.toast('从当前页面识别到 '+posts.length+' 个帖子，其中 '+seen+' 条属于本地收藏；更新 '+changed+' 个标题。');
   }
   buildPanel() {
     const btn=(text,label,fn,cls='icon')=>element('button',{text,'aria-label':label,title:label,class:cls,onclick:this.safe(fn)});

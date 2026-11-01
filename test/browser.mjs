@@ -51,6 +51,36 @@ try {
   await page.keyboard.press('Escape');
   await card.getByRole('button',{name:'重新读取标题'}).click();
 
+  // A loaded forum card can have /guild/forum/thread URL and visible preview.
+  // Refresh must detect its updated heading WITHOUT entering the post.
+  await page.locator('#forum').click();
+  await page.waitForFunction(()=>window.fixtureApp.context.type==='forum');
+  await page.evaluate(async()=>{
+    const app=window.fixtureApp;
+    await app.store.add(makeRecord({guildId:'111111111111111111',
+      threadId:'444444444444444444',forumId:'222222222222222222',
+      originalTitle:'教程10｜数字电子技术'},'manual-link'));
+  });
+  await page.locator('#rename-card').click();
+  await page.waitForFunction(()=>{
+    const app=window.fixtureApp;
+    return app.adapter.collectVisiblePosts().some(
+      p=>p.threadId==='444444444444444444'&&p.originalTitle==='教程10｜标题已经在论坛列表中变化'
+    );
+  });
+  await page.getByRole('button',{name:'刷新当前页面可见收藏的标题'}).click();
+  await page.waitForFunction(()=>{
+    const r=window.fixtureApp.store.records.get('111111111111111111:444444444444444444');
+    return r?.originalTitle==='教程10｜标题已经在论坛列表中变化'&&r?.changeUnread===true;
+  });
+  const renamed=await page.evaluate(()=>window.fixtureApp.store.records.get('111111111111111111:444444444444444444'));
+  assert.equal(renamed.previousSeenTitle,'教程10｜数字电子技术');
+  assert.equal(renamed.originalTitle,'教程10｜标题已经在论坛列表中变化');
+  assert.ok(!renamed.originalTitle.includes('帖子预览消息内容'));
+  await page.evaluate(()=>window.fixtureApp.store.patch('111111111111111111:444444444444444444',{changeUnread:false}));
+  await page.getByRole('region',{name:'收藏列表'}).getByRole('article').first().waitFor();
+
+
   // Observed title changes appear only in the new '最近更新' filter.
   await page.evaluate(async()=>{
     await window.fixtureApp.store.observe({
