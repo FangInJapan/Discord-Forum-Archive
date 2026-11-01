@@ -12,6 +12,21 @@ export function normalizeThreadTitle(value) {
   if(cleaned===source && source.length>=40 && source.endsWith('聊天'))cleaned=source.slice(0,-2);
   return cleaned.trim() || source;
 }
+// Forum cards may link to /channels/guild/forum/thread, while permanent thread
+// links often use /channels/guild/thread. Treat the third ID as a thread only
+// when the second ID is the known, currently rendered forum (never a message).
+export function visibleForumPostLink(href, context) {
+  if(context?.type!=='forum'||!ID.test(context.guildId||'')||!ID.test(context.forumId||''))return null;
+  let u;try{u=new URL(href,'https://discord.com');}catch{return null;}
+  if(u.protocol!=='https:'||!['discord.com','canary.discord.com','ptb.discord.com','discordapp.com'].includes(u.hostname)||u.port||u.username||u.password)return null;
+  const m=u.pathname.match(/^\/channels\/(\d{16,22})\/(\d{16,22})(?:\/(\d{16,22}))?\/?$/);
+  if(!m||m[1]!==context.guildId)return null;
+  const threadId=m[2]===context.forumId?(m[3]||u.searchParams.get('thread')):m[2];
+  if(!threadId||!ID.test(threadId)||threadId===context.forumId)return null;
+  // Links whose second ID names a different *forum* cannot be reliably
+  // distinguished from a direct thread URI, so callers must use forum cards.
+  return {guildId:context.guildId,threadId,url:canonical(context.guildId,threadId)};
+}
 export function controlLabel(el) { return (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim(); }
 export function visible(el) { return !!el && !el.closest('[hidden],[aria-hidden="true"]') && el.getClientRects().length > 0; }
 export function routeOf(href) {
@@ -31,8 +46,10 @@ export class DiscordAdapter {
   }
   main() { return this.doc.querySelector('main,[role="main"]'); }
   forumRoot(main) {
-    return main?.querySelector('[data-list-id*="forum"],[data-forum-channel-id]') ||
-      (main && [...main.querySelectorAll('button,[role="button"]')].some(b => visible(b) && CREATE.test(controlLabel(b))) ? main : null);
+    if(!main)return null;
+    return main.querySelector('[data-list-id*="forum"],[data-forum-channel-id]') ||
+      (main.querySelector('article[class*="post"],[class*="forumPost"],[class*="postCard"],[class*="forumChannel"]') ? main : null) ||
+      ([...main.querySelectorAll('button,[role="button"]')].some(b => visible(b) && CREATE.test(controlLabel(b))) ? main : null);
   }
   title(root) {
     if (!root) return '';
@@ -49,26 +66,35 @@ export class DiscordAdapter {
     return !!scope && scope.isConnected!==false && [...scope.querySelectorAll('button,[role="button"],[role="menuitem"],[aria-label],[title]')]
       .some(el=>el.isConnected!==false && visible(el) && UNFOLLOW.test(controlLabel(el)));
   }
-  // Association is limited to rendered forum post cards. Never infer a post from a random menu.
+  // Read only a rendered forum post card associated with an explicit post link.
   postFromNode(node,c=this.context) {
-    if(!node?.closest || c.type!=='forum')return null;
-    const root=this.forumRoot(this.main());
-    if(!root || !root.contains(node))return null;
-    const card=node.closest('article,[role="article"],[role="listitem"],[data-list-item-id],[class*="forumPost"],[class*="postCard"]');
-    const anchor=node.closest('a[href]'), links=[anchor,...(card?[...card.querySelectorAll('a[href]')]:[])].filter(Boolean);
-    for(const link of links) {
-      try {
-        const parsed=parseLink(link.href);
-        if(parsed.guildId!==c.guildId || parsed.threadId===c.forumId)continue;
-        const scope=card||link;
-        const title=normalizeThreadTitle(this.title(scope)||link.getAttribute('aria-label')||link.textContent?.trim()||'');
-        return {...parsed,forumId:c.forumId,forumName:c.forumName,guildName:c.guildName,originalTitle:title,card:scope};
-      }catch{/* Non-post links are not candidates. */}
+    if(!node?.closest||c.type!=='forum')return null;
+    const root=this.forumRoot(this.main())||this.main();
+    if(!root||!root.contains(node))return null;
+    const selector='article,[role="article"],[role="listitem"],[data-list-item-id],[class*="forumPost"],[class*="postCard"],[class*="card_"]';
+    const card=node.closest(selector);
+    if(card && !root.contains(card))return null;
+    const anchor=node.closest('a[href]');
+    const links=[anchor,...(card?[...card.querySelectorAll('a[href]')]:[])].filter(Boolean);
+    for(const link of new Set(links)) {
+      const parsed=visibleForumPostLink(link.href||link.getAttribute('href'),c);
+      if(!parsed)continue;
+      // A card's heading is preferable to link text, which may contain
+      // preview messages, button labels, or other UI content.
+      const heading=card?.querySelector('h2,h3,h4,[role="heading"],[data-testid*="post-title"],[class*="postTitle"],[class*="threadTitle"],[class*="titleText"]');
+      const title=normalizeThreadTitle(
+        (heading&&visible(heading)?heading.textContent:'') ||
+        link.getAttribute('aria-label') || link.getAttribute('title') ||
+        (link.children.length===0?link.textContent:'') || ''
+      );
+      if(!title || /^(?:打开帖子|查看帖子|聊天|消息|更多|回复)$/.test(title))continue;
+      return {...parsed,forumId:c.forumId,forumName:c.forumName,guildName:c.guildName,
+        originalTitle:title,card:card||link};
     }
     return null;
   }
   collectVisibleFollowed() {
-    const c=this.inspect(),root=c.type==='forum'?this.forumRoot(this.main()):null,records=new Map();
+    const c=this.inspect(),root=c.type==='forum'?(this.forumRoot(this.main())||this.main()):null,records=new Map();
     if(!root)return [];
     for(const link of root.querySelectorAll('a[href*="/channels/"]')) {
       if(!visible(link))continue;
@@ -84,7 +110,8 @@ export class DiscordAdapter {
     const c=this.inspect(),items=new Map();
     if(c.type==='thread'&&c.originalTitle)items.set(identity(c),c);
     if(c.type==='forum'){
-      const root=this.forumRoot(this.main());
+      const root=this.forumRoot(this.main())||this.main();
+      // Forum DOM may use either canonical or parent-qualified links.
       for(const link of root?.querySelectorAll('a[href*="/channels/"]')||[]){
         if(!visible(link))continue;
         const info=this.postFromNode(link,c);
