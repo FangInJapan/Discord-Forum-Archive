@@ -383,10 +383,11 @@ export class ArchiveApp {
     if(!this.profile)return this.chooseProfile();
     const c=this.adapter.inspect();
     if(c.type!=='forum'||!c.guildId||!c.forumId){
-      if(c.type==='unknown'&&c.guildId&&c.channelId){
+      if(c.guildId&&c.channelId){
+        // Even a misclassified thread route can be corrected explicitly.
         this.forumRecognitionDialog({scanAfter:true});return;
       }
-      this.toast('当前识别为'+(c.type==='thread'?'帖子':'非论坛页面')+'。请进入论坛频道；若识别错误，可点击面板中的频道名称进行人工修正。');
+      this.toast('当前不是服务器频道页面，请进入论坛后再更新。');
       return;
     }
     const scanKey=c.guildId+':'+c.forumId;
