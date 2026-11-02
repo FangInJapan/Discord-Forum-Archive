@@ -467,9 +467,6 @@ input[type=range]{accent-color:var(--accent)}
   :host([data-dock="bottom"]) .tools{grid-column:1/-1;grid-row:3}
   :host([data-dock="bottom"]) .list{grid-row:4}
   :host([data-dock="bottom"]) .footer{grid-row:5}
-  :host([data-dock="bottom"]) .panel{
-    grid-template-rows:auto auto auto minmax(0,1fr) auto;
-  }
 }
 @container (max-width:410px){
   :host([data-dock="bottom"]) .tools{
@@ -488,4 +485,9 @@ input[type=range]{accent-color:var(--accent)}
   :host([data-dock="bottom"]) .list{padding:2px 9px 8px}
 }
 
+@media (max-width:600px){
+  :host([data-dock="bottom"]) .panel{
+    grid-template-rows:auto auto auto minmax(0,1fr) auto;
+  }
+}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}*::before,*::after{transition:none!important;animation:none!important}}`;
