@@ -179,7 +179,14 @@ export class ArchiveApp {
   async activate(profile) {
     await this.prefQueue.catch(()=>{});
     const savedPrefs=await this.storage.get(`${PREFIX}prefs:${profile.id}`,null);
-    const nextPrefs=cleanPrefs(savedPrefs || {...cleanPrefs(),height:Math.round(innerHeight*.7)});
+    // Migrate legacy side panels once. Keep all bookmarks, folders, filters and
+    // theme preferences; only change the layout to the new bottom workspace.
+    const needsLayoutMigration=!!savedPrefs&&savedPrefs.layoutVersion!==2;
+    const nextPrefs=cleanPrefs(needsLayoutMigration ?
+      {...savedPrefs,dock:'bottom',width:Math.min(1320,Math.max(300,innerWidth-16)),
+        height:Math.min(320,Math.max(240,Math.floor(innerHeight*.44))),
+        x:.5,y:1,layoutVersion:2} : (savedPrefs||cleanPrefs()));
+    if(needsLayoutMigration)await this.storage.set(`${PREFIX}prefs:${profile.id}`,nextPrefs);
     const nextStore=new ArchiveStore(this.storage,profile.id,()=> {if(this.store===nextStore)this.changed();});
     await nextStore.refresh(); // Keep the previous library intact if loading fails.
     await this.storage.set(`${PREFIX}activeProfile`,profile.id);
@@ -616,11 +623,11 @@ export class ArchiveApp {
     const rect=geometry(p,{width:innerWidth,height:innerHeight},mode==='collapsed');
     const node=mode==='collapsed'?this.tab:this.panel;
     Object.assign(node.style,{left:`${rect.x}px`,top:`${rect.y}px`,width:`${rect.width}px`,height:`${rect.height}px`});
-    this.host.dataset.glass=p.glass?'on':'off';this.host.dataset.motion=p.motion?'on':'off';
+    this.host.dataset.glass=p.glass?'on':'off';this.host.dataset.motion=p.motion?'on':'off';this.host.dataset.dock=p.dock;
     this.host.style.setProperty('--title-size',`${p.titleSize}px`);this.host.style.setProperty('--ui-size',`${p.uiSize}px`);
     this.host.style.setProperty('--title-lines',String(p.lines || 99999));this.host.style.setProperty('--spacing',({compact:'7px',standard:'10px',relaxed:'15px'})[p.density]);
   }
-  async resetLayout() {await this.savePrefs({width:460,height:Math.round(innerHeight*.7),x:1,y:.15,dock:'right',mode:'expanded'});this.force=true;this.layout();}
+  async resetLayout() {await this.savePrefs({width:Math.min(1320,Math.max(300,innerWidth-16)),height:Math.min(320,Math.max(240,Math.floor(innerHeight*.44))),x:.5,y:1,dock:'bottom',layoutVersion:2,mode:'expanded'});this.force=true;this.layout();}
   pointerStart(event,edge) {
     if(event.button!==0 || (edge==='move' && event.target.closest('button,input,select')))return;
     if(edge==='tab' && !this.profile)return;
@@ -634,8 +641,9 @@ export class ArchiveApp {
       else {
         let left=start.x,right=start.right,top=start.y,bottom=start.bottom;
         const minW=Math.min(300,innerWidth-16),minH=Math.min(240,innerHeight*.9);
-        if(edge.includes('e'))right=Math.max(left+minW,Math.min(innerWidth,left+760,start.right+dx));
-        if(edge.includes('w'))left=Math.min(right-minW,Math.max(0,right-760,start.x+dx));
+        const maxW=(this.prefs.dock==='bottom'||this.prefs.dock==='top')?Math.max(minW,innerWidth-16):760;
+        if(edge.includes('e'))right=Math.max(left+minW,Math.min(innerWidth,left+maxW,start.right+dx));
+        if(edge.includes('w'))left=Math.min(right-minW,Math.max(0,right-maxW,start.x+dx));
         if(edge.includes('s'))bottom=Math.max(top+minH,Math.min(innerHeight,top+innerHeight*.9,start.bottom+dy));
         if(edge.includes('n'))top=Math.min(bottom-minH,Math.max(0,bottom-innerHeight*.9,start.y+dy));
         rect={x:left,y:top,width:right-left,height:bottom-top};
@@ -852,7 +860,7 @@ export class ArchiveApp {
       const group=(title,...children)=>element('section',{class:'settings-group'},
         element('h3',{text:title}),...children);
       const grid=(...children)=>element('div',{class:'settings-grid'},...children);
-      const maxWidth=Math.max(300,Math.min(760,innerWidth-16));
+      const maxWidth=Math.max(300,Math.min((p.dock==='bottom'||p.dock==='top')?2400:760,innerWidth-16));
       const maxHeight=Math.max(240,Math.min(2000,Math.floor(innerHeight*.9)));
       const panes={
         appearance:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'外观'},

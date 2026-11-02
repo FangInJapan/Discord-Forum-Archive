@@ -210,3 +210,21 @@ test('confirmed forum classification is validated, backup-safe, and profile-loca
   assert.deepEqual(old.knownForums,{});
   assert.deepEqual(cleanPrefs().knownForums,{});
 });
+
+test('bottom dock is centered, full-width-capable and folds into a horizontal strip',()=>{
+  const p=cleanPrefs();
+  assert.equal(p.dock,'bottom');assert.equal(p.layoutVersion,2);
+  assert.equal(p.width,1320);assert.equal(p.height,320);
+  const wide=geometry(p,{width:1440,height:900});
+  assert.equal(wide.width,1320);assert.equal(wide.height,320);
+  assert.equal(wide.x,60);assert.equal(wide.y,572);
+  const folded=geometry(p,{width:1440,height:900},true);
+  assert.equal(folded.width,194);assert.equal(folded.height,40);
+  assert.equal(folded.x,623);assert.equal(folded.y,852);
+  const narrow=geometry(p,{width:375,height:667});
+  assert.ok(narrow.width<=359&&narrow.x>=0&&narrow.y+narrow.height<=667);
+  const original=geometry({...p,dock:'right',width:470,height:520},{width:1440,height:900});
+  assert.equal(original.x,1440-original.width);
+  assert.equal(original.width,470,'user-selected right dock still works');
+  assert.equal(cleanPrefs({dock:'bottom',width:2200}).width,2200,'wide bottom resize persists');
+});

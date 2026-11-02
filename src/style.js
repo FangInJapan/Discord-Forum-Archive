@@ -308,4 +308,186 @@ input[type=range]{accent-color:var(--accent)}
  .filter-segments .filter-segment{font-size:10px;padding:3px 1px}
 }
 
+
+/* V1.5 bottom workspace: use the horizontal width, not a stretched sidebar. */
+:host([data-dock="bottom"]) .panel{
+  display:grid;
+  grid-template-columns:minmax(215px,240px) minmax(0,1fr);
+  grid-template-rows:auto auto minmax(0,1fr) auto;
+  min-width:0;
+  min-height:0;
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  border-radius:16px 16px 12px 12px;
+}
+:host([data-dock="bottom"]) .header{
+  grid-column:1;grid-row:1;
+  min-width:0;
+  padding:7px 8px 7px 12px;
+  align-self:center;
+}
+:host([data-dock="bottom"]) .header strong{
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+}
+:host([data-dock="bottom"]) .context{
+  grid-column:2;grid-row:1;
+  align-self:center;
+  justify-self:stretch;
+  width:calc(100% - 18px);
+  min-width:0;
+  min-height:30px;
+  margin:0 10px 0 0;
+  padding:4px 8px;
+}
+:host([data-dock="bottom"]) .tools{
+  grid-column:1/-1;grid-row:2;
+  display:grid;
+  grid-template-columns:minmax(180px,1.05fr) minmax(300px,1.8fr) minmax(148px,.68fr);
+  align-items:center;
+  gap:9px;
+  padding:5px 12px 10px;
+  min-width:0;
+}
+:host([data-dock="bottom"]) .tools>input[type="search"]{
+  min-width:0;
+  height:34px;
+}
+:host([data-dock="bottom"]) .tools .filters{
+  display:grid;
+  grid-template-columns:minmax(178px,1.6fr) minmax(90px,.85fr) 32px;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+}
+:host([data-dock="bottom"]) .filters .filter-segments{
+  grid-column:1;
+  width:100%;
+}
+:host([data-dock="bottom"]) .filters .collection-select{
+  grid-column:2;
+  height:34px;
+}
+:host([data-dock="bottom"]) .filters .sort-slot{
+  grid-column:3;
+  width:32px;height:34px;
+}
+:host([data-dock="bottom"]) .page-save{
+  min-width:0;
+  width:100%;
+  min-height:34px;
+  padding:5px 9px;
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+}
+:host([data-dock="bottom"]) .list{
+  grid-column:1/-1;grid-row:3;
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));
+  grid-auto-rows:min-content;
+  align-content:start;
+  gap:8px;
+  min-height:0;
+  min-width:0;
+  overflow-y:auto;
+  overflow-x:hidden;
+  padding:2px 12px 10px;
+  overscroll-behavior:contain;
+}
+:host([data-dock="bottom"]) .list .compact-card{
+  min-width:0;
+  max-width:100%;
+  margin:0;
+  padding:7px 8px;
+  align-content:start;
+}
+:host([data-dock="bottom"]) .list .card-title{
+  line-height:1.43;
+}
+:host([data-dock="bottom"]) .list .empty,
+:host([data-dock="bottom"]) .list .pager{
+  grid-column:1/-1;
+  min-width:0;
+}
+:host([data-dock="bottom"]) .footer{
+  grid-column:1/-1;grid-row:4;
+  display:flex;
+  align-items:center;
+  min-width:0;
+  min-height:35px;
+  padding:5px 12px;
+  gap:8px;
+}
+:host([data-dock="bottom"]) .footer [role="status"]{
+  min-width:0;
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+}
+:host([data-dock="bottom"]) .footer .refresh-titles{
+  margin-left:auto;
+  flex:none;
+}
+:host([data-dock="bottom"]) .tab{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  writing-mode:horizontal-tb;
+  text-orientation:mixed;
+  white-space:nowrap;
+  letter-spacing:.1px;
+  font-size:12px;
+  font-weight:600;
+  border-radius:12px 12px 6px 6px;
+  padding:6px 16px;
+}
+:host([data-dock="bottom"]) .quick{
+  top:auto;
+  right:12px;
+  bottom:calc(56px + env(safe-area-inset-bottom,0px));
+}
+:host([data-dock="bottom"]) .handle[data-edge="s"],
+:host([data-dock="bottom"]) .handle[data-edge="se"],
+:host([data-dock="bottom"]) .handle[data-edge="sw"]{
+  display:none;
+}
+/* Container rules also work when the panel itself was manually resized. */
+:host([data-dock="bottom"]) .panel{container-type:inline-size}
+@container (max-width:880px){
+  :host([data-dock="bottom"]) .tools{
+    grid-template-columns:minmax(0,1fr) minmax(155px,.8fr);
+    gap:6px;
+  }
+  :host([data-dock="bottom"]) .tools .filters{grid-column:1/-1;grid-row:2}
+}
+@container (max-width:600px){
+  :host([data-dock="bottom"]) .header{grid-column:1/-1;grid-row:1}
+  :host([data-dock="bottom"]) .context{grid-column:1/-1;grid-row:2;margin:0 10px;width:calc(100% - 20px)}
+  :host([data-dock="bottom"]) .tools{grid-column:1/-1;grid-row:3}
+  :host([data-dock="bottom"]) .list{grid-row:4}
+  :host([data-dock="bottom"]) .footer{grid-row:5}
+}
+@container (max-width:410px){
+  :host([data-dock="bottom"]) .tools{
+    display:grid;
+    grid-template-columns:minmax(0,1fr);
+    gap:5px;
+    padding:4px 9px 7px;
+  }
+  :host([data-dock="bottom"]) .tools>input[type="search"]{grid-column:1;grid-row:1}
+  :host([data-dock="bottom"]) .tools .filters{grid-column:1;grid-row:2}
+  :host([data-dock="bottom"]) .tools .page-save{grid-column:1;grid-row:3}
+  :host([data-dock="bottom"]) .tools .filters{
+    grid-template-columns:minmax(0,1fr) minmax(72px,.6fr) 32px;
+  }
+  :host([data-dock="bottom"]) .header{padding:5px 8px}
+  :host([data-dock="bottom"]) .list{padding:2px 9px 8px}
+}
+
+@media (max-width:600px){
+  :host([data-dock="bottom"]) .panel{
+    grid-template-rows:auto auto auto minmax(0,1fr) auto;
+  }
+}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}*::before,*::after{transition:none!important;animation:none!important}}`;

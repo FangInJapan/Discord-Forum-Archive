@@ -1,5 +1,5 @@
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-export const VERSION = '1.4.0';
+export const VERSION = '1.5.0';
 export const SCHEMA = 1;
 export const PREFIX = 'dfa:v1:';
 export const ID = /^[0-9]{16,22}$/;
@@ -10,7 +10,7 @@ export const DEFAULTS = Object.freeze({
   theme: 'discord', titleSize: 15, uiSize: 13, lines: 4, density: 'standard',
   snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true, glass: true, motion: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
-  width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {}, scanResults: {},
+  width: 1320, height: 320, x: 0.5, y: 1, dock: 'bottom', layoutVersion: 2, filters: {}, scanResults: {},
   folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}, knownForums: {}
 });
 export function uid() { return crypto.randomUUID(); }
@@ -272,8 +272,9 @@ export function cleanPrefs(raw) {
   if (!raw || typeof raw !== 'object') return p;
   for (const [k,opts] of Object.entries({theme:['discord','dark','light'],density:['compact','standard','relaxed'],mode:['expanded','collapsed','hidden'],dock:['none','left','right','top','bottom'],defaultScope:['forum','server'],defaultSort:SORTS})) if (opts.includes(raw[k])) p[k] = raw[k];
   for (const k of ['snap','hover','autoFollow','debug','autoOpen','glass','motion']) if (typeof raw[k] === 'boolean') p[k] = raw[k];
-  for (const [k,min,max] of [['titleSize',12,22],['uiSize',11,18],['width',300,760],['height',240,2000],['x',0,1],['y',0,1]]) if (typeof raw[k] === 'number' && Number.isFinite(raw[k])) p[k] = Math.max(min,Math.min(max,raw[k]));
+  for (const [k,min,max] of [['titleSize',12,22],['uiSize',11,18],['width',300,2400],['height',240,2000],['x',0,1],['y',0,1]]) if (typeof raw[k] === 'number' && Number.isFinite(raw[k])) p[k] = Math.max(min,Math.min(max,raw[k]));
   if ([0,1,2,3,4].includes(raw.lines)) p.lines = raw.lines;
+  if(raw.layoutVersion===2)p.layoutVersion=2;
   p.filters = {};
   if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:'server',sort:f.sort,updates:['all','changed','missing'].includes(f.updates)?f.updates:'all'};
   // Manual scans cover only the forum that was actually shown in Discord.
@@ -299,12 +300,18 @@ export function cleanPrefs(raw) {
   return p;
 }
 export function geometry(p, viewport, collapsed = false) {
-  const pad = 8, vw = Math.max(1,viewport.width), vh = Math.max(1,viewport.height);
-  const w = collapsed ? Math.min(40,vw) : Math.min(Math.max(300,p.width),760,Math.max(1,vw-pad*2));
-  const h = collapsed ? Math.min(112,vh) : Math.min(Math.max(240,p.height),Math.max(1,Math.floor(vh*0.9)),Math.max(1,vh-pad*2));
-  const rx = Math.max(0,vw-w-pad*2), ry = Math.max(0,vh-h-pad*2);
-  let x = Math.min(pad,vw-w) + rx*p.x, y = Math.min(pad,vh-h) + ry*p.y;
-  if (p.dock === 'left') x = 0; if (p.dock === 'right') x = vw-w;
-  if (p.dock === 'top') y = 0; if (p.dock === 'bottom') y = vh-h;
+  const pad=8,vw=Math.max(1,viewport.width),vh=Math.max(1,viewport.height);
+  const horizontal=p.dock==='bottom'||p.dock==='top';
+  const w=collapsed ? Math.min(horizontal?194:40,vw) :
+    Math.min(Math.max(300,p.width),horizontal?2400:760,Math.max(1,vw-pad*2));
+  const h=collapsed ? Math.min(horizontal?40:112,vh) :
+    Math.min(Math.max(240,p.height),Math.max(1,Math.floor(vh*.9)),Math.max(1,vh-pad*2));
+  const rx=Math.max(0,vw-w-pad*2),ry=Math.max(0,vh-h-pad*2);
+  let x=Math.min(pad,vw-w)+rx*p.x,y=Math.min(pad,vh-h)+ry*p.y;
+  if(p.dock==='left')x=0;
+  if(p.dock==='right')x=vw-w;
+  if(horizontal)x=Math.max(0,(vw-w)/2);
+  if(p.dock==='top')y=0;
+  if(p.dock==='bottom')y=Math.max(0,vh-h-pad);
   return {x:Math.max(0,x),y:Math.max(0,y),width:w,height:h};
 }
