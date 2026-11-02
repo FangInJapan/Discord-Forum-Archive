@@ -19,6 +19,25 @@ try {
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.getByLabel('新资料库名称').fill('Browser Test');await page.getByRole('button',{name:'创建并使用',exact:true}).click();
+  // Legacy users should be migrated from the right-side panel exactly once
+  // without losing unrelated preferences and without changing bookmarks.
+  await page.evaluate(async()=>{
+    const app=window.fixtureApp;
+    const legacy={...app.prefs,dock:'right',width:460,height:580,titleSize:17,mode:'expanded'};
+    delete legacy.layoutVersion;
+    await app.storage.set('dfa:v1:prefs:'+app.profile.id,legacy);
+    await app.activate(app.profile);
+  });
+  const migrated=await page.evaluate(async()=>{
+    const a=window.fixtureApp;
+    return {dock:a.prefs.dock,version:a.prefs.layoutVersion,width:a.prefs.width,
+      titleSize:a.prefs.titleSize,stored:(await a.storage.get('dfa:v1:prefs:'+a.profile.id,{})).layoutVersion,
+      box:a.panel.getBoundingClientRect().toJSON(),viewport:innerWidth};
+  });
+  assert.equal(migrated.dock,'bottom');assert.equal(migrated.version,2);
+  assert.equal(migrated.stored,2);assert.equal(migrated.titleSize,17);
+  assert.ok(migrated.box.width>760&&migrated.box.left>=0&&migrated.box.right<=migrated.viewport+1);
+  assert.ok(migrated.box.top>500,'bottom panel should leave most of the main Discord view unobstructed');
   await page.getByRole('link',{name:/教程2｜/}).click();await page.getByRole('button',{name:'一键收藏当前帖子',exact:true}).click();
   await page.getByRole('region',{name:'收藏列表'}).getByRole('article').waitFor();
   assert.equal(await page.locator('article.card').count(),1);
@@ -231,6 +250,15 @@ try {
     },'manual-link'));
     app.renderList();
   });
+  const bottomColumns=await page.evaluate(()=>{
+    const a=window.fixtureApp;
+    return {dock:a.prefs.dock,columns:getComputedStyle(a.list).gridTemplateColumns.split(' ').filter(Boolean).length,
+      scrollable:a.list.scrollHeight>a.list.clientHeight,
+      panelWidth:a.panel.getBoundingClientRect().width};
+  });
+  assert.equal(bottomColumns.dock,'bottom');
+  assert.ok(bottomColumns.columns>=3,'wide bottom layout should show multiple cards per row: '+JSON.stringify(bottomColumns));
+  assert.ok(bottomColumns.scrollable,'bottom grid must allow scrolling long bookmark lists');
   const clicked=await page.evaluate(()=>{
     const app=window.fixtureApp,list=app.list;
     list.scrollTop=Math.min(520,list.scrollHeight-list.clientHeight);
@@ -339,5 +367,22 @@ try {
   assert.ok(compactBounds&&compactBounds.x>=0&&compactBounds.x+compactBounds.width<=375,
     'compact cards must remain within a narrow viewport: '+JSON.stringify(compactBounds));
   await page.screenshot({path:'test-output/smoke-narrow.png'});
+  const small=await page.evaluate(()=>{
+    const a=window.fixtureApp;
+    const rect=e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height,width:r.width}};
+    return {panel:rect(a.panel),search:rect(a.search),filter:rect(a.filterSegments),
+      list:rect(a.list),columns:getComputedStyle(a.list).gridTemplateColumns.split(' ').length};
+  });
+  assert.ok(small.panel.bottom<=812&&small.panel.left>=0&&small.panel.right<=375+1);
+  assert.ok(small.search.left>=small.panel.left-1&&small.search.right<=small.panel.right+1);
+  assert.ok(small.filter.left>=small.panel.left-1&&small.filter.right<=small.panel.right+1);
+  assert.ok(small.list.height>=55,'narrow bottom layout must preserve a usable scroll area: '+JSON.stringify(small));
+  assert.equal(small.columns,1,'narrow screens should use one bookmark column');
+  await page.getByRole('button',{name:'折叠面板'}).click();
+  const folded=await page.getByRole('button',{name:'展开收藏面板'}).boundingBox();
+  assert.ok(folded&&folded.width>folded.height*2,'collapsed bottom bar should be horizontal');
+  assert.ok(folded.y+folded.height<=812+1&&folded.y>720);
+  await page.getByRole('button',{name:'展开收藏面板'}).click();
+  await page.getByRole('region',{name:'收藏列表'}).getByRole('article').first().waitFor();
   assert.deepEqual(errors,[]);console.log(report);console.log('Browser fixture smoke checks passed. Not a live Discord/Tampermonkey test.');
 } finally {await browser?.close();await new Promise(r=>server.close(r));}
