@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Forum Archive
 // @namespace    https://github.com/FangInJapan/Discord-Forum-Archive
-// @version      1.4.0
+// @version      1.5.0
 // @description  独立保存 Discord 论坛帖子收藏；支持分类、长标题、备份和可调面板。
 // @author       FangInJapan
 // @match        https://discord.com/channels/*
@@ -26,7 +26,7 @@
 
 // ---- core.js ----
 // Pure data layer. No Discord APIs, browser globals, or whole-database writes.
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const SCHEMA = 1;
 const PREFIX = 'dfa:v1:';
 const ID = /^[0-9]{16,22}$/;
@@ -37,7 +37,7 @@ const DEFAULTS = Object.freeze({
   theme: 'discord', titleSize: 15, uiSize: 13, lines: 4, density: 'standard',
   snap: true, hover: false, autoFollow: true, debug: false, autoOpen: true, glass: true, motion: true,
   defaultScope: 'forum', defaultSort: 'saved-desc', mode: 'expanded',
-  width: 460, height: 580, x: 1, y: 0.15, dock: 'right', filters: {}, scanResults: {},
+  width: 1320, height: 320, x: 0.5, y: 1, dock: 'bottom', layoutVersion: 2, filters: {}, scanResults: {},
   folders: [{id:'default',name:'默认收藏夹'}], folderSelections: {}, guildAliases: {}, forumAliases: {}, knownForums: {}
 });
 function uid() { return crypto.randomUUID(); }
@@ -299,8 +299,9 @@ function cleanPrefs(raw) {
   if (!raw || typeof raw !== 'object') return p;
   for (const [k,opts] of Object.entries({theme:['discord','dark','light'],density:['compact','standard','relaxed'],mode:['expanded','collapsed','hidden'],dock:['none','left','right','top','bottom'],defaultScope:['forum','server'],defaultSort:SORTS})) if (opts.includes(raw[k])) p[k] = raw[k];
   for (const k of ['snap','hover','autoFollow','debug','autoOpen','glass','motion']) if (typeof raw[k] === 'boolean') p[k] = raw[k];
-  for (const [k,min,max] of [['titleSize',12,22],['uiSize',11,18],['width',300,760],['height',240,2000],['x',0,1],['y',0,1]]) if (typeof raw[k] === 'number' && Number.isFinite(raw[k])) p[k] = Math.max(min,Math.min(max,raw[k]));
+  for (const [k,min,max] of [['titleSize',12,22],['uiSize',11,18],['width',300,2400],['height',240,2000],['x',0,1],['y',0,1]]) if (typeof raw[k] === 'number' && Number.isFinite(raw[k])) p[k] = Math.max(min,Math.min(max,raw[k]));
   if ([0,1,2,3,4].includes(raw.lines)) p.lines = raw.lines;
+  if(raw.layoutVersion===2)p.layoutVersion=2;
   p.filters = {};
   if (raw.filters && typeof raw.filters === 'object') for (const [id,f] of Object.entries(raw.filters)) if (ID.test(id) && f && ['server','forum'].includes(f.scope) && SORTS.includes(f.sort)) p.filters[id] = {scope:'server',sort:f.sort,updates:['all','changed','missing'].includes(f.updates)?f.updates:'all'};
   // Manual scans cover only the forum that was actually shown in Discord.
@@ -326,13 +327,19 @@ function cleanPrefs(raw) {
   return p;
 }
 function geometry(p, viewport, collapsed = false) {
-  const pad = 8, vw = Math.max(1,viewport.width), vh = Math.max(1,viewport.height);
-  const w = collapsed ? Math.min(40,vw) : Math.min(Math.max(300,p.width),760,Math.max(1,vw-pad*2));
-  const h = collapsed ? Math.min(112,vh) : Math.min(Math.max(240,p.height),Math.max(1,Math.floor(vh*0.9)),Math.max(1,vh-pad*2));
-  const rx = Math.max(0,vw-w-pad*2), ry = Math.max(0,vh-h-pad*2);
-  let x = Math.min(pad,vw-w) + rx*p.x, y = Math.min(pad,vh-h) + ry*p.y;
-  if (p.dock === 'left') x = 0; if (p.dock === 'right') x = vw-w;
-  if (p.dock === 'top') y = 0; if (p.dock === 'bottom') y = vh-h;
+  const pad=8,vw=Math.max(1,viewport.width),vh=Math.max(1,viewport.height);
+  const horizontal=p.dock==='bottom'||p.dock==='top';
+  const w=collapsed ? Math.min(horizontal?194:40,vw) :
+    Math.min(Math.max(300,p.width),horizontal?2400:760,Math.max(1,vw-pad*2));
+  const h=collapsed ? Math.min(horizontal?40:112,vh) :
+    Math.min(Math.max(240,p.height),Math.max(1,Math.floor(vh*.9)),Math.max(1,vh-pad*2));
+  const rx=Math.max(0,vw-w-pad*2),ry=Math.max(0,vh-h-pad*2);
+  let x=Math.min(pad,vw-w)+rx*p.x,y=Math.min(pad,vh-h)+ry*p.y;
+  if(p.dock==='left')x=0;
+  if(p.dock==='right')x=vw-w;
+  if(horizontal)x=Math.max(0,(vw-w)/2);
+  if(p.dock==='top')y=0;
+  if(p.dock==='bottom')y=Math.max(0,vh-h-pad);
   return {x:Math.max(0,x),y:Math.max(0,y),width:w,height:h};
 }
 
@@ -923,6 +930,188 @@ input[type=range]{accent-color:var(--accent)}
  .filter-segments .filter-segment{font-size:10px;padding:3px 1px}
 }
 
+
+/* V1.5 bottom workspace: use the horizontal width, not a stretched sidebar. */
+:host([data-dock="bottom"]) .panel{
+  display:grid;
+  grid-template-columns:minmax(215px,240px) minmax(0,1fr);
+  grid-template-rows:auto auto minmax(0,1fr) auto;
+  min-width:0;
+  min-height:0;
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  border-radius:16px 16px 12px 12px;
+}
+:host([data-dock="bottom"]) .header{
+  grid-column:1;grid-row:1;
+  min-width:0;
+  padding:7px 8px 7px 12px;
+  align-self:center;
+}
+:host([data-dock="bottom"]) .header strong{
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+}
+:host([data-dock="bottom"]) .context{
+  grid-column:2;grid-row:1;
+  align-self:center;
+  justify-self:stretch;
+  width:calc(100% - 18px);
+  min-width:0;
+  min-height:30px;
+  margin:0 10px 0 0;
+  padding:4px 8px;
+}
+:host([data-dock="bottom"]) .tools{
+  grid-column:1/-1;grid-row:2;
+  display:grid;
+  grid-template-columns:minmax(180px,1.05fr) minmax(300px,1.8fr) minmax(148px,.68fr);
+  align-items:center;
+  gap:9px;
+  padding:5px 12px 10px;
+  min-width:0;
+}
+:host([data-dock="bottom"]) .tools>input[type="search"]{
+  min-width:0;
+  height:34px;
+}
+:host([data-dock="bottom"]) .tools .filters{
+  display:grid;
+  grid-template-columns:minmax(178px,1.6fr) minmax(90px,.85fr) 32px;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+}
+:host([data-dock="bottom"]) .filters .filter-segments{
+  grid-column:1;
+  width:100%;
+}
+:host([data-dock="bottom"]) .filters .collection-select{
+  grid-column:2;
+  height:34px;
+}
+:host([data-dock="bottom"]) .filters .sort-slot{
+  grid-column:3;
+  width:32px;height:34px;
+}
+:host([data-dock="bottom"]) .page-save{
+  min-width:0;
+  width:100%;
+  min-height:34px;
+  padding:5px 9px;
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+}
+:host([data-dock="bottom"]) .list{
+  grid-column:1/-1;grid-row:3;
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));
+  grid-auto-rows:min-content;
+  align-content:start;
+  gap:8px;
+  min-height:0;
+  min-width:0;
+  overflow-y:auto;
+  overflow-x:hidden;
+  padding:2px 12px 10px;
+  overscroll-behavior:contain;
+}
+:host([data-dock="bottom"]) .list .compact-card{
+  min-width:0;
+  max-width:100%;
+  margin:0;
+  padding:7px 8px;
+  align-content:start;
+}
+:host([data-dock="bottom"]) .list .card-title{
+  line-height:1.43;
+}
+:host([data-dock="bottom"]) .list .empty,
+:host([data-dock="bottom"]) .list .pager{
+  grid-column:1/-1;
+  min-width:0;
+}
+:host([data-dock="bottom"]) .footer{
+  grid-column:1/-1;grid-row:4;
+  display:flex;
+  align-items:center;
+  min-width:0;
+  min-height:35px;
+  padding:5px 12px;
+  gap:8px;
+}
+:host([data-dock="bottom"]) .footer [role="status"]{
+  min-width:0;
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+}
+:host([data-dock="bottom"]) .footer .refresh-titles{
+  margin-left:auto;
+  flex:none;
+}
+:host([data-dock="bottom"]) .tab{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  writing-mode:horizontal-tb;
+  text-orientation:mixed;
+  white-space:nowrap;
+  letter-spacing:.1px;
+  font-size:12px;
+  font-weight:600;
+  border-radius:12px 12px 6px 6px;
+  padding:6px 16px;
+}
+:host([data-dock="bottom"]) .quick{
+  top:auto;
+  right:12px;
+  bottom:calc(56px + env(safe-area-inset-bottom,0px));
+}
+:host([data-dock="bottom"]) .handle[data-edge="s"],
+:host([data-dock="bottom"]) .handle[data-edge="se"],
+:host([data-dock="bottom"]) .handle[data-edge="sw"]{
+  display:none;
+}
+/* Container rules also work when the panel itself was manually resized. */
+:host([data-dock="bottom"]) .panel{container-type:inline-size}
+@container (max-width:880px){
+  :host([data-dock="bottom"]) .tools{
+    grid-template-columns:minmax(0,1fr) minmax(155px,.8fr);
+    gap:6px;
+  }
+  :host([data-dock="bottom"]) .tools .filters{grid-column:1/-1;grid-row:2}
+}
+@container (max-width:600px){
+  :host([data-dock="bottom"]) .header{grid-column:1/-1;grid-row:1}
+  :host([data-dock="bottom"]) .context{grid-column:1/-1;grid-row:2;margin:0 10px;width:calc(100% - 20px)}
+  :host([data-dock="bottom"]) .tools{grid-column:1/-1;grid-row:3}
+  :host([data-dock="bottom"]) .list{grid-row:4}
+  :host([data-dock="bottom"]) .footer{grid-row:5}
+}
+@container (max-width:410px){
+  :host([data-dock="bottom"]) .tools{
+    display:grid;
+    grid-template-columns:minmax(0,1fr);
+    gap:5px;
+    padding:4px 9px 7px;
+  }
+  :host([data-dock="bottom"]) .tools>input[type="search"]{grid-column:1;grid-row:1}
+  :host([data-dock="bottom"]) .tools .filters{grid-column:1;grid-row:2}
+  :host([data-dock="bottom"]) .tools .page-save{grid-column:1;grid-row:3}
+  :host([data-dock="bottom"]) .tools .filters{
+    grid-template-columns:minmax(0,1fr) minmax(72px,.6fr) 32px;
+  }
+  :host([data-dock="bottom"]) .header{padding:5px 8px}
+  :host([data-dock="bottom"]) .list{padding:2px 9px 8px}
+}
+
+@media (max-width:600px){
+  :host([data-dock="bottom"]) .panel{
+    grid-template-rows:auto auto auto minmax(0,1fr) auto;
+  }
+}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}*::before,*::after{transition:none!important;animation:none!important}}`;
 
 
@@ -1105,7 +1294,14 @@ class ArchiveApp {
   async activate(profile) {
     await this.prefQueue.catch(()=>{});
     const savedPrefs=await this.storage.get(`${PREFIX}prefs:${profile.id}`,null);
-    const nextPrefs=cleanPrefs(savedPrefs || {...cleanPrefs(),height:Math.round(innerHeight*.7)});
+    // Migrate legacy side panels once. Keep all bookmarks, folders, filters and
+    // theme preferences; only change the layout to the new bottom workspace.
+    const needsLayoutMigration=!!savedPrefs&&savedPrefs.layoutVersion!==2;
+    const nextPrefs=cleanPrefs(needsLayoutMigration ?
+      {...savedPrefs,dock:'bottom',width:Math.min(1320,Math.max(300,innerWidth-16)),
+        height:Math.min(320,Math.max(240,Math.floor(innerHeight*.44))),
+        x:.5,y:1,layoutVersion:2} : (savedPrefs||cleanPrefs()));
+    if(needsLayoutMigration)await this.storage.set(`${PREFIX}prefs:${profile.id}`,nextPrefs);
     const nextStore=new ArchiveStore(this.storage,profile.id,()=> {if(this.store===nextStore)this.changed();});
     await nextStore.refresh(); // Keep the previous library intact if loading fails.
     await this.storage.set(`${PREFIX}activeProfile`,profile.id);
@@ -1542,11 +1738,11 @@ class ArchiveApp {
     const rect=geometry(p,{width:innerWidth,height:innerHeight},mode==='collapsed');
     const node=mode==='collapsed'?this.tab:this.panel;
     Object.assign(node.style,{left:`${rect.x}px`,top:`${rect.y}px`,width:`${rect.width}px`,height:`${rect.height}px`});
-    this.host.dataset.glass=p.glass?'on':'off';this.host.dataset.motion=p.motion?'on':'off';
+    this.host.dataset.glass=p.glass?'on':'off';this.host.dataset.motion=p.motion?'on':'off';this.host.dataset.dock=p.dock;
     this.host.style.setProperty('--title-size',`${p.titleSize}px`);this.host.style.setProperty('--ui-size',`${p.uiSize}px`);
     this.host.style.setProperty('--title-lines',String(p.lines || 99999));this.host.style.setProperty('--spacing',({compact:'7px',standard:'10px',relaxed:'15px'})[p.density]);
   }
-  async resetLayout() {await this.savePrefs({width:460,height:Math.round(innerHeight*.7),x:1,y:.15,dock:'right',mode:'expanded'});this.force=true;this.layout();}
+  async resetLayout() {await this.savePrefs({width:Math.min(1320,Math.max(300,innerWidth-16)),height:Math.min(320,Math.max(240,Math.floor(innerHeight*.44))),x:.5,y:1,dock:'bottom',layoutVersion:2,mode:'expanded'});this.force=true;this.layout();}
   pointerStart(event,edge) {
     if(event.button!==0 || (edge==='move' && event.target.closest('button,input,select')))return;
     if(edge==='tab' && !this.profile)return;
@@ -1560,8 +1756,9 @@ class ArchiveApp {
       else {
         let left=start.x,right=start.right,top=start.y,bottom=start.bottom;
         const minW=Math.min(300,innerWidth-16),minH=Math.min(240,innerHeight*.9);
-        if(edge.includes('e'))right=Math.max(left+minW,Math.min(innerWidth,left+760,start.right+dx));
-        if(edge.includes('w'))left=Math.min(right-minW,Math.max(0,right-760,start.x+dx));
+        const maxW=(this.prefs.dock==='bottom'||this.prefs.dock==='top')?Math.max(minW,innerWidth-16):760;
+        if(edge.includes('e'))right=Math.max(left+minW,Math.min(innerWidth,left+maxW,start.right+dx));
+        if(edge.includes('w'))left=Math.min(right-minW,Math.max(0,right-maxW,start.x+dx));
         if(edge.includes('s'))bottom=Math.max(top+minH,Math.min(innerHeight,top+innerHeight*.9,start.bottom+dy));
         if(edge.includes('n'))top=Math.min(bottom-minH,Math.max(0,bottom-innerHeight*.9,start.y+dy));
         rect={x:left,y:top,width:right-left,height:bottom-top};
@@ -1778,7 +1975,7 @@ class ArchiveApp {
       const group=(title,...children)=>element('section',{class:'settings-group'},
         element('h3',{text:title}),...children);
       const grid=(...children)=>element('div',{class:'settings-grid'},...children);
-      const maxWidth=Math.max(300,Math.min(760,innerWidth-16));
+      const maxWidth=Math.max(300,Math.min((p.dock==='bottom'||p.dock==='top')?2400:760,innerWidth-16));
       const maxHeight=Math.max(240,Math.min(2000,Math.floor(innerHeight*.9)));
       const panes={
         appearance:element('div',{class:'settings-pane',role:'tabpanel','aria-label':'外观'},
